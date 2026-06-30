@@ -118,7 +118,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           await supabaseAdmin.from("webhook_logs").insert({
             client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200, error: "phone_not_allowlisted",
           });
-          return new Response(JSON.stringify({ ai_reply: "" }), { headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "STOP" }), { headers: cors });
         }
 
         const nowIso = new Date().toISOString();
@@ -166,7 +166,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             client_id: client.id, direction: "outbound",
             payload: { skipped: "escalated" } as unknown as Json, status_code: 200,
           });
-          return new Response(JSON.stringify({ ai_reply: "", skip_send: true }), { headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "STOP", skip_send: true }), { headers: cors });
         }
 
         if (manualTakeover) {
@@ -176,7 +176,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             phone: data.phone ?? existing?.phone ?? null,
             first_name: data.first_name ?? existing?.first_name ?? null,
           }).eq("id", convoId!);
-          return new Response(JSON.stringify({ ai_reply: "" }), { headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "STOP" }), { headers: cors });
         }
 
         const isFirstEverMessage = priorMessageCount === 0;
