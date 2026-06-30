@@ -575,6 +575,44 @@ async function draftBookingReply(
   return null;
 }
 
+/**
+ * Pick a short, language-aware "let me check..." ack bubble for slow tool calls.
+ * Prefers the AI's first-pass `reply` (it's prompted to provide a brief holding
+ * phrase), but only if it's actually short and not the full answer.
+ * Falls back to a localized template based on the user's last message script.
+ */
+function pickAckText(
+  aiFirstPass: string | undefined,
+  lastUserText: string,
+  actionType: "check_availability" | "book_slot",
+): string {
+  const candidate = (aiFirstPass ?? "").trim();
+  // Use AI's holding phrase only if it's genuinely short (< 90 chars, 1 line).
+  if (candidate && candidate.length <= 90 && !candidate.includes("\n")) {
+    return candidate;
+  }
+  // Detect script / language from the last user message.
+  const t = lastUserText ?? "";
+  if (/[\u0600-\u06FF]/.test(t)) {
+    return actionType === "book_slot" ? "ایک سیکنڈ، بُک کر رہا ہوں…" : "ایک سیکنڈ، چیک کرتا ہوں…";
+  }
+  if (/[\u0900-\u097F]/.test(t)) {
+    return actionType === "book_slot" ? "एक सेकंड, बुक कर रहा हूँ…" : "एक सेकंड, चेक करता हूँ…";
+  }
+  if (/[\u0621-\u064A]/.test(t)) {
+    return actionType === "book_slot" ? "لحظة، أحجز لك الآن…" : "لحظة، أتحقق لك…";
+  }
+  // Roman Urdu heuristic
+  const lower = t.toLowerCase();
+  const romanHits = ["kya", "ka ", "ko ", " ma ", " ha ", "kar", "mujh", "mera", "kasa", "btao", "thora", "abi", "nahi"]
+    .filter((w) => lower.includes(w)).length;
+  if (romanHits >= 2) {
+    return actionType === "book_slot" ? "ek sec, *book* kar raha hun…" : "ek sec, *check* karta hun…";
+  }
+  return actionType === "book_slot" ? "one sec, *booking* it now…" : "one sec, let me *check*…";
+}
+}
+
 function safeParseAIJson(content: string): AIResponse | null {
   const tryParse = (s: string): AIResponse | null => {
     try { return JSON.parse(s) as AIResponse; } catch { return null; }
