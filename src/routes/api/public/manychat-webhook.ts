@@ -337,6 +337,37 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
   },
 });
 
+async function draftBookingReply(
+  aiKey: string | undefined,
+  systemPrompt: string,
+  messages: Msg[],
+  toolResult: { tool: string; result: string; timezone?: string },
+): Promise<string | null> {
+  if (!aiKey) return null;
+  try {
+    const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "Lovable-API-Key": aiKey },
+      body: JSON.stringify({
+        model: "google/gemini-3-flash-preview",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages.map((m) => ({ role: m.role, content: m.content })),
+          {
+            role: "system",
+            content: `TOOL_RESULT (${toolResult.tool})${toolResult.timezone ? ` [timezone: ${toolResult.timezone}]` : ""}:\n${toolResult.result}\n\nNow draft ONLY the final WhatsApp reply text (no JSON, no preamble). Follow all tone rules. If presenting slots, list them as a short numbered list using the human-readable label only (drop the ISO). If the booking succeeded, confirm warmly in 1-2 lines.`,
+          },
+        ],
+      }),
+    });
+    const json = await resp.json().catch(() => null);
+    const txt = json?.choices?.[0]?.message?.content;
+    if (typeof txt === "string" && txt.trim().length) return txt.trim();
+  } catch { /* ignore */ }
+  return null;
+}
+
+
 function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
   const blocks: string[] = [];
 
