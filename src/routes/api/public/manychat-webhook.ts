@@ -301,7 +301,8 @@ async function processAndSend(
     aiResponseLog = { error: "missing_LOVABLE_API_KEY" };
   } else {
     try {
-      const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const { retryFetch } = await import("@/lib/retry");
+      const resp = await retryFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -312,7 +313,7 @@ async function processAndSend(
           messages: aiMessages,
           response_format: { type: "json_object" },
         }),
-      });
+      }, { attempts: 3, baseMs: 500, timeoutMs: 18_000, label: "ai-gateway-main" });
       aiStatusCode = resp.status;
       const json = await resp.json().catch(() => null);
       aiResponseLog = json;
