@@ -345,7 +345,13 @@ async function processAndSend(
   // "let me check..." ack bubble first so the user sees activity, then
   // continue with the real work and send the final answer as bubble #2.
   let ackSent = false;
-  const action = normalizeBookingAction(parsedAI?.booking_action, parsedAI, messages, data.message_text);
+  let action = normalizeBookingAction(parsedAI?.booking_action, parsedAI, messages, data.message_text);
+  // SAFETY: if the conversation is already booked, ignore any new booking
+  // action the AI emits (e.g. on "thanks"). Re-running book_slot for an
+  // already-taken slot otherwise produces a "no longer available" reply.
+  if (action && action.type !== "none" && existing?.status === "booked") {
+    action = { type: "none" };
+  }
   let toolFinalReply = false;
   if (!shouldEscalate && action && action.type !== "none") {
     const ackText = pickAckText(parsedAI?.reply, data.message_text, action.type);
