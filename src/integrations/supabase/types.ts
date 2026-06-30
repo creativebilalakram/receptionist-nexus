@@ -16,30 +16,63 @@ export type Database = {
     Tables: {
       appointments: {
         Row: {
+          booked_via: string
+          cancellation_reason: string | null
           client_id: string
+          contact_email: string | null
+          contact_name: string | null
+          contact_phone: string | null
           conversation_id: string | null
           created_at: string
+          duration_minutes: number | null
           id: string
+          meeting_type_id: string | null
           notes: string | null
+          parent_appointment_id: string | null
+          reminder_sent_at: string | null
+          reschedule_count: number
           scheduled_at: string
+          second_reminder_sent_at: string | null
           status: string
         }
         Insert: {
+          booked_via?: string
+          cancellation_reason?: string | null
           client_id: string
+          contact_email?: string | null
+          contact_name?: string | null
+          contact_phone?: string | null
           conversation_id?: string | null
           created_at?: string
+          duration_minutes?: number | null
           id?: string
+          meeting_type_id?: string | null
           notes?: string | null
+          parent_appointment_id?: string | null
+          reminder_sent_at?: string | null
+          reschedule_count?: number
           scheduled_at: string
+          second_reminder_sent_at?: string | null
           status?: string
         }
         Update: {
+          booked_via?: string
+          cancellation_reason?: string | null
           client_id?: string
+          contact_email?: string | null
+          contact_name?: string | null
+          contact_phone?: string | null
           conversation_id?: string | null
           created_at?: string
+          duration_minutes?: number | null
           id?: string
+          meeting_type_id?: string | null
           notes?: string | null
+          parent_appointment_id?: string | null
+          reminder_sent_at?: string | null
+          reschedule_count?: number
           scheduled_at?: string
+          second_reminder_sent_at?: string | null
           status?: string
         }
         Relationships: [
@@ -55,6 +88,143 @@ export type Database = {
             columns: ["conversation_id"]
             isOneToOne: false
             referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "appointments_meeting_type_id_fkey"
+            columns: ["meeting_type_id"]
+            isOneToOne: false
+            referencedRelation: "meeting_types"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "appointments_parent_appointment_id_fkey"
+            columns: ["parent_appointment_id"]
+            isOneToOne: false
+            referencedRelation: "appointments"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      availability_rules: {
+        Row: {
+          client_id: string
+          created_at: string
+          day_of_week: number
+          end_time: string
+          id: string
+          is_enabled: boolean
+          start_time: string
+        }
+        Insert: {
+          client_id: string
+          created_at?: string
+          day_of_week: number
+          end_time?: string
+          id?: string
+          is_enabled?: boolean
+          start_time?: string
+        }
+        Update: {
+          client_id?: string
+          created_at?: string
+          day_of_week?: number
+          end_time?: string
+          id?: string
+          is_enabled?: boolean
+          start_time?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "availability_rules_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      blocked_dates: {
+        Row: {
+          client_id: string
+          created_at: string
+          end_at: string
+          id: string
+          reason: string | null
+          start_at: string
+        }
+        Insert: {
+          client_id: string
+          created_at?: string
+          end_at: string
+          id?: string
+          reason?: string | null
+          start_at: string
+        }
+        Update: {
+          client_id?: string
+          created_at?: string
+          end_at?: string
+          id?: string
+          reason?: string | null
+          start_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "blocked_dates_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      booking_settings: {
+        Row: {
+          cancellation_window_hours: number
+          client_id: string
+          confirmation_template: string
+          created_at: string
+          id: string
+          manychat_api_key: string | null
+          max_advance_days: number
+          min_notice_minutes: number
+          reminder_hours_before: number
+          reminder_template: string
+          second_reminder_hours_before: number
+        }
+        Insert: {
+          cancellation_window_hours?: number
+          client_id: string
+          confirmation_template?: string
+          created_at?: string
+          id?: string
+          manychat_api_key?: string | null
+          max_advance_days?: number
+          min_notice_minutes?: number
+          reminder_hours_before?: number
+          reminder_template?: string
+          second_reminder_hours_before?: number
+        }
+        Update: {
+          cancellation_window_hours?: number
+          client_id?: string
+          confirmation_template?: string
+          created_at?: string
+          id?: string
+          manychat_api_key?: string | null
+          max_advance_days?: number
+          min_notice_minutes?: number
+          reminder_hours_before?: number
+          reminder_template?: string
+          second_reminder_hours_before?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "booking_settings_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: true
+            referencedRelation: "clients"
             referencedColumns: ["id"]
           },
         ]
@@ -188,6 +358,53 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "conversations_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      meeting_types: {
+        Row: {
+          buffer_after_minutes: number
+          buffer_before_minutes: number
+          client_id: string
+          created_at: string
+          description: string | null
+          duration_minutes: number
+          id: string
+          is_active: boolean
+          is_default: boolean
+          name: string
+        }
+        Insert: {
+          buffer_after_minutes?: number
+          buffer_before_minutes?: number
+          client_id: string
+          created_at?: string
+          description?: string | null
+          duration_minutes: number
+          id?: string
+          is_active?: boolean
+          is_default?: boolean
+          name: string
+        }
+        Update: {
+          buffer_after_minutes?: number
+          buffer_before_minutes?: number
+          client_id?: string
+          created_at?: string
+          description?: string | null
+          duration_minutes?: number
+          id?: string
+          is_active?: boolean
+          is_default?: boolean
+          name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "meeting_types_client_id_fkey"
             columns: ["client_id"]
             isOneToOne: false
             referencedRelation: "clients"
