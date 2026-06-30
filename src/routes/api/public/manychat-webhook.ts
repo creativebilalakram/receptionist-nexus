@@ -346,6 +346,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           }
         }
 
+        aiReply = sanitizeReplyText(aiReply);
         messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
 
         await supabaseAdmin.from("conversations").update({
@@ -432,6 +433,20 @@ function safeParseAIJson(content: string): AIResponse | null {
   }
   return null;
 }
+
+function sanitizeReplyText(text: string): string {
+  if (!text) return text;
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("```")) {
+    const parsed = safeParseAIJson(trimmed);
+    if (parsed && typeof (parsed as { reply?: unknown }).reply === "string") {
+      return ((parsed as { reply: string }).reply).trim();
+    }
+  }
+  return trimmed;
+}
+
+
 
 
 function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
