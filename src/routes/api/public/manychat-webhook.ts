@@ -627,6 +627,2031 @@ function autoSplitReply(text: string): string[] {
   return [a, b];
 }
 
+type AvailabilitySummary = {
+  user_stated_time: string | null;
+  timezone: string;
+  exact_available: boolean;
+  exact_slot: { start: string; label: string } | null;
+  alternatives: Array<{ start: string; label: string }>;
+  window_empty: boolean;
+};
+
+function normalizeBookingAction(
+  action: BookingAction | undefined,
+  ai: AIResponse | null,
+  messages: Msg[],
+  lastUserText: string,
+): NormalizedBookingAction | undefined {
+  if (!action) {
+    return ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)
+      ? buildCheckAvailabilityAction({}, messages, lastUserText)
+      : undefined;
+  }
+
+  if (action.type === "none" || action.type === "check_availability") return action;
+  if (action.type === "book_slot") {
+    return typeof action.slot_iso_utc === "string" && action.slot_iso_utc.trim()
+      ? action
+      : { type: "none" };
+  }
+
+  // Backward compatibility for older / provider-invented tool names.
+  // This was the root cause of the stuck screenshot: OpenAI returned
+  // { type: "get_slots" }, so the code sent only a holding bubble and never
+  // executed availability lookup.
+  if (["get_slots", "show_slots", "list_slots", "availability", "get_availability"].includes(action.type)) {
+    return buildCheckAvailabilityAction(action, messages, lastUserText);
+  }
+
+  if (ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)) {
+    return buildCheckAvailabilityAction(action, messages, lastUserText);
+  }
+
+  return { type: "none" };
+}
+
+function buildCheckAvailabilityAction(
+  raw: Record<string, unknown>,
+  messages: Msg[],
+  lastUserText: string,
+): CheckAvailabilityAction {
+  const specific = parseSpecificTimeLocal(lastUserText) ?? null;
+  return {
+    type: "check_availability",
+    user_stated_time: lastUserText,
+    preferred_date_label: inferPreferredDateLabel(raw, messages, lastUserText) ?? undefined,
+    preferred_time_window: inferTimeWindow(lastUserText, specific),
+    specific_time_local: specific,
+  };
+}
+
+function looksLikeAvailabilityAsk(text: string): boolean {
+  const t = text.toLowerCase();
+  return /\b(avb|avail|available|availability|slot|slots|time|timing|when|kab|konsa|dikhao|show)\b/.test(t);
+}
+
+function inferPreferredDateLabel(
+  raw: Record<string, unknown>,
+  messages: Msg[],
+  lastUserText: string,
+): string | null {
+  if (typeof raw.preferred_date_label === "string" && raw.preferred_date_label.trim()) {
+    return raw.preferred_date_label.trim();
+  }
+  if (raw.days === 0 || raw.day_offset === 0) return "today";
+  if (raw.days === 1 || raw.day_offset === 1) return "tomorrow";
+
+  const recent = [...messages.slice(-8).map((m) => m.content), lastUserText].join(" \n ").toLowerCase();
+  if (/\b(tomorrow|tmrw|kal)\b/.test(recent)) return "tomorrow";
+  if (/\b(today|aaj)\b/.test(recent)) return "today";
+  const weekday = recent.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (weekday) return weekday[1];
+  const iso = recent.match(/\b\d{4}-\d{2}-\d{2}\b/);
+  return iso?.[0] ?? null;
+}
+
+function inferTimeWindow(text: string, specific: string | null): CheckAvailabilityAction["preferred_time_window"] {
+  const t = text.toLowerCase();
+  if (specific) return "specific_time";
+  if (/\b(morning|subah)\b/.test(t)) return "morning";
+  if (/\b(afternoon|dopahar|dupehar)\b/.test(t)) return "afternoon";
+  if (/\b(evening|shaam|sham|raat|night)\b/.test(t)) return "evening";
+  return "any";
+}
+
+function parseSpecificTimeLocal(text: string): string | null {
+  const t = text.toLowerCase();
+  const withMinutes = t.match(/\b(1[0-2]|0?[1-9]|2[0-3])[:.]([0-5]\d)\s*(am|pm)?\b/);
+  if (withMinutes) {
+    let h = parseInt(withMinutes[1], 10);
+    const m = parseInt(withMinutes[2], 10);
+    const mer = withMinutes[3];
+    if (mer === "pm" && h < 12) h += 12;
+    if (mer === "am" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+
+  const hourOnly = t.match(/\b(1[0-2]|0?[1-9])\s*(am|pm)\b/);
+  if (hourOnly) {
+    let h = parseInt(hourOnly[1], 10);
+    const mer = hourOnly[2];
+    if (mer === "pm" && h < 12) h += 12;
+    if (mer === "am" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:00`;
+  }
+
+  return null;
+}
+
+function composeAvailabilityReply(summary: AvailabilitySummary, lastUserText: string): string {
+  if (summary.exact_available && summary.exact_slot) {
+    return localizedText(lastUserText, {
+      roman: `Haan, *${summary.exact_slot.label}* available hai. Lock kar dun?`,
+      english: `Yes, *${summary.exact_slot.label}* is available. Should I lock it in?`,
+      urdu: `جی، *${summary.exact_slot.label}* دستیاب ہے۔ بُک کر دوں؟`,
+      hindi: `हाँ, *${summary.exact_slot.label}* available है। बुक कर दूँ?`,
+      arabic: `نعم، *${summary.exact_slot.label}* متاح. أحجزه لك؟`,
+    });
+  }
+
+  if (summary.alternatives.length > 0) {
+    const times = summary.alternatives.map((s) => `*${s.label}*`).join(" or ");
+    return localizedText(lastUserText, {
+      roman: `${summary.user_stated_time ? "Wo exact time available nahi." : "Available slots ye hain."} ${times} ${summary.timezone} work karega?`,
+      english: `${summary.user_stated_time ? "That exact time is taken." : "Available slots:"} ${times} ${summary.timezone}. Which works?`,
+      urdu: `وہ exact time دستیاب نہیں۔ ${times} ${summary.timezone} میں سے کون سا ٹھیک ہے؟`,
+      hindi: `वो exact time available नहीं है। ${times} ${summary.timezone} में कौन सा ठीक रहेगा?`,
+      arabic: `ذلك الوقت غير متاح. ${times} ${summary.timezone} أيهما يناسبك؟`,
+    });
+  }
+
+  return pickAvailabilityFailureText(lastUserText);
+}
+
+function composeBookingSuccessReply(label: string, lastUserText: string, email: string | null): string {
+  if (email) {
+    return localizedText(lastUserText, {
+      roman: `Done, demo *${label}* par book ho gayi. Calendar invite email par aa jayega.`,
+      english: `Done, your demo is booked for *${label}*. The calendar invite will hit your email shortly.`,
+      urdu: `Done، آپ کا demo *${label}* پر book ہو گیا۔ Calendar invite email پر آ جائے گا۔`,
+      hindi: `Done, आपका demo *${label}* पर book हो गया। Calendar invite email पर आ जाएगा।`,
+      arabic: `تم، حجزت العرض في *${label}*. ستصلك دعوة التقويم على البريد قريباً.`,
+    });
+  }
+  return localizedText(lastUserText, {
+    roman: `Done, demo *${label}* par book ho gayi. Email bhej dein, calendar invite bhi send kar deta hun.`,
+    english: `Done, your demo is booked for *${label}*. Send your email so I can send a calendar invite too.`,
+    urdu: `Done، demo *${label}* پر book ہو گیا۔ Email bhej dein, calendar invite bhi send kar deta hun.`,
+    hindi: `Done, demo *${label}* पर book हो गया। Email भेज दें, calendar invite भी भेज दूँगा.`,
+    arabic: `تم، حجزت العرض في *${label}*. أرسل بريدك لأرسل دعوة التقويم أيضاً.`,
+  });
+}
+
+function pickAvailabilityFailureText(lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: "Abhi matching *slot* nahi mil raha. Koi aur day ya time bata dein?",
+    english: "I’m not seeing a matching *slot* right now. What other day or time works?",
+    urdu: "ابھی matching *slot* نہیں مل رہا۔ کوئی اور دن یا وقت بتائیں؟",
+    hindi: "अभी matching *slot* नहीं मिल रहा। कोई और दिन या समय बताएँ?",
+    arabic: "لا أرى موعداً مناسباً الآن. ما اليوم أو الوقت الآخر الذي يناسبك؟",
+  });
+}
+
+function resolveSlotFromConversation(
+  ctx: AvailabilityContext,
+  messages: Msg[],
+  lastUserText: string,
+  generateSlotsFn: (ctx: AvailabilityContext, rangeStart: Date, rangeEnd: Date, maxSlots?: number) => Slot[],
+): string | null {
+  const wanted = inferWantedHour(lastUserText, messages);
+  if (wanted == null) return null;
+
+  const dateLabel = inferPreferredDateLabel({}, messages, lastUserText) ?? "tomorrow";
+  const target = resolveTargetDateTime(dateLabel, null, ctx.timezone);
+  const anchor = target.date ?? new Date();
+  const slots = generateSlotsFn(ctx, new Date(anchor.getTime() - 24 * 60 * 60_000), new Date(anchor.getTime() + 6 * 24 * 60 * 60_000), 120);
+  const daySlots = target.localYmd
+    ? slots.filter((s) => localYmdInTz(new Date(s.start), ctx.timezone) === target.localYmd)
+    : slots;
+  const hit = daySlots.find((s) => localHourInTz(new Date(s.start), ctx.timezone) === wanted);
+  return hit?.start ?? null;
+}
+
+function inferWantedHour(lastUserText: string, messages: Msg[]): number | null {
+  const specific = parseSpecificTimeLocal(lastUserText);
+  if (specific) return parseInt(specific.slice(0, 2), 10);
+
+  const n = lastUserText.trim().match(/^([1-9]|1[0-2])$/)?.[1];
+  if (!n) return null;
+  const hour = parseInt(n, 10);
+  const recentAssistant = [...messages].reverse().find((m) => m.role === "assistant")?.content.toLowerCase() ?? "";
+  const offeredPm = new RegExp(`\\b${hour}(?::00)?\\s*pm\\b`).test(recentAssistant);
+  const offeredAm = new RegExp(`\\b${hour}(?::00)?\\s*am\\b`).test(recentAssistant);
+  if (offeredPm && hour < 12) return hour + 12;
+  if (offeredAm) return hour === 12 ? 0 : hour;
+  return hour >= 8 ? hour : hour + 12;
+}
+
+function localizedText(
+  text: string,
+  variants: { roman: string; english: string; urdu: string; hindi: string; arabic: string },
+): string {
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ - ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+  if (/[ ]/.test(text)) return variants.english;
+
+  const t = text.toLowerCase();
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+  if (/[ ]/.test(t)) return variants.english;
+
+  return variants.english;
+}
+
 
 async function draftBookingReply(
   aiKey: string | undefined,
