@@ -223,13 +223,9 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             aiResponseLog = json;
             if (resp.ok && json?.choices?.[0]?.message?.content) {
               const content = json.choices[0].message.content as string;
-              try {
-                parsedAI = JSON.parse(content) as AIResponse;
-                if (typeof parsedAI.reply === "string" && parsedAI.reply.trim().length > 0) {
-                  aiReply = parsedAI.reply.trim();
-                }
-              } catch {
-                aiReply = content.slice(0, 500);
+              parsedAI = safeParseAIJson(content);
+              if (parsedAI && typeof parsedAI.reply === "string" && parsedAI.reply.trim().length > 0) {
+                aiReply = parsedAI.reply.trim();
               }
             }
           } catch (err) {
@@ -364,6 +360,28 @@ async function draftBookingReply(
     const txt = json?.choices?.[0]?.message?.content;
     if (typeof txt === "string" && txt.trim().length) return txt.trim();
   } catch { /* ignore */ }
+  return null;
+}
+
+function safeParseAIJson(content: string): AIResponse | null {
+  const tryParse = (s: string): AIResponse | null => {
+    try { return JSON.parse(s) as AIResponse; } catch { return null; }
+  };
+  let direct = tryParse(content);
+  if (direct) return direct;
+  // Strip ```json ... ``` fences
+  const fenceMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    direct = tryParse(fenceMatch[1].trim());
+    if (direct) return direct;
+  }
+  // Extract first { ... last }
+  const first = content.indexOf("{");
+  const last = content.lastIndexOf("}");
+  if (first !== -1 && last > first) {
+    direct = tryParse(content.slice(first, last + 1));
+    if (direct) return direct;
+  }
   return null;
 }
 
