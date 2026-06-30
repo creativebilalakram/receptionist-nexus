@@ -77,3 +77,31 @@ export async function sendWhatsAppText(
     };
   }
 }
+
+/**
+ * Send multiple short WhatsApp messages sequentially with human-like delays
+ * between them (simulates a person typing two separate thoughts).
+ * Delay is computed from text length: ~35ms/char, clamped to 600-2200ms.
+ * Returns the LAST send result (used for logging the final status).
+ */
+export async function sendWhatsAppTextParts(
+  subscriberId: string,
+  parts: string[],
+  opts?: { messageTag?: string },
+): Promise<SendResult> {
+  const clean = parts.map((p) => (p ?? "").trim()).filter((p) => p.length > 0);
+  if (clean.length === 0) {
+    return { ok: false, status: 0, error: "empty_parts" };
+  }
+  let last: SendResult = { ok: false, status: 0, error: "noop" };
+  for (let i = 0; i < clean.length; i++) {
+    if (i > 0) {
+      const prev = clean[i - 1];
+      const delay = Math.min(2200, Math.max(600, prev.length * 35));
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    last = await sendWhatsAppText(subscriberId, clean[i], opts);
+    if (!last.ok) return last; // stop on first failure
+  }
+  return last;
+}
