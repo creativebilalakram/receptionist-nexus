@@ -11,14 +11,26 @@ async function loadAdmin() {
 }
 
 
-const Payload = z.object({
-  client_id: z.string().uuid(),
-  webhook_secret: z.string().min(10).max(200),
-  subscriber_id: z.string().min(1).max(200),
-  phone: z.string().max(40).optional().nullable(),
-  first_name: z.string().max(120).optional().nullable(),
-  message_text: z.string().min(1).max(4000),
-});
+// Accepts ManyChat "Full Contact Data" payload directly.
+// client_id + webhook_secret are passed as URL query params.
+const Payload = z
+  .object({
+    id: z.union([z.string(), z.number()]).optional().nullable(),
+    key: z.string().optional().nullable(),
+    first_name: z.string().max(120).optional().nullable(),
+    last_name: z.string().max(120).optional().nullable(),
+    name: z.string().max(240).optional().nullable(),
+    phone: z.string().max(40).optional().nullable(),
+    whatsapp_phone: z.string().max(40).optional().nullable(),
+    last_input_text: z.string().max(4000).optional().nullable(),
+    // Back-compat: still allow legacy custom-field shape
+    client_id: z.string().uuid().optional(),
+    webhook_secret: z.string().optional(),
+    subscriber_id: z.string().optional(),
+    message_text: z.string().optional(),
+  })
+  .passthrough();
+
 
 const FALLBACK = "Give me one moment, let me check on that for you.";
 
@@ -107,7 +119,34 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           });
           return new Response(JSON.stringify({ ai_reply: "", error: "invalid_payload" }), { status: 400, headers: cors });
         }
-        const data = parsed.data;
+        const rawData = parsed.data;
+
+        // Pull credentials from URL query params (preferred) or fall back to body
+        const url = new URL(request.url);
+        const qClientId = url.searchParams.get("client_id") ?? undefined;
+        const qSecret = url.searchParams.get("secret") ?? url.searchParams.get("webhook_secret") ?? undefined;
+
+        const client_id = rawData.client_id ?? qClientId;
+        const webhook_secret = rawData.webhook_secret ?? qSecret;
+        const subscriber_id = rawData.subscriber_id ?? (rawData.id != null ? String(rawData.id) : "");
+        const phone = rawData.phone ?? rawData.whatsapp_phone ?? null;
+        const first_name = rawData.first_name ?? null;
+        const message_text = (rawData.message_text ?? rawData.last_input_text ?? "").trim();
+
+        if (!client_id || !webhook_secret || !subscriber_id || !message_text) {
+          await supabaseAdmin.from("webhook_logs").insert({
+            direction: "inbound", payload: raw as Json, status_code: 400,
+            error: `missing_fields: ${[
+              !client_id && "client_id",
+              !webhook_secret && "webhook_secret",
+              !subscriber_id && "subscriber_id",
+              !message_text && "message_text",
+            ].filter(Boolean).join(",")}`,
+          });
+          return new Response(JSON.stringify({ ai_reply: "", error: "invalid_payload" }), { status: 400, headers: cors });
+        }
+
+        const data = { client_id, webhook_secret, subscriber_id, phone, first_name, message_text };
 
         const { data: client, error: clientErr } = await supabaseAdmin
           .from("clients").select("*").eq("id", data.client_id).maybeSingle();
@@ -135,6 +174,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         // TEMP allowlist
         const ALLOWED_PHONES = ["3447306520", "3260660523"];
         const normalized = (data.phone ?? "").replace(/\D/g, "");
+
         const last10 = normalized.slice(-10);
         if (!ALLOWED_PHONES.includes(last10)) {
           await supabaseAdmin.from("webhook_logs").insert({
@@ -197,12 +237,22 @@ async function fetchExistingConv(
   return data;
 }
 
+type NormalizedPayload = {
+  client_id: string;
+  webhook_secret: string;
+  subscriber_id: string;
+  phone: string | null;
+  first_name: string | null;
+  message_text: string;
+};
+
 async function processAndSend(
   supabaseAdmin: SupabaseAdmin,
   client: ClientRow & { id: string },
-  data: z.infer<typeof Payload>,
+  data: NormalizedPayload,
   existing: ConvRow | null,
 ): Promise<void> {
+
   const nowIso = new Date().toISOString();
   const messages: Msg[] = Array.isArray(existing?.messages) ? (existing!.messages as unknown as Msg[]) : [];
   const priorMessageCount = messages.length;
