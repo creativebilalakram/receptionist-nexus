@@ -676,6 +676,58 @@ function pickAckText(
   return actionType === "book_slot" ? "one sec, *booking* it now…" : "one sec, let me *check*…";
 }
 
+/**
+ * Deterministic, language-aware failure reply for book_slot.
+ * Used when the AI proposes an invalid/past/hallucinated slot OR the DB insert
+ * fails. We never let the AI write this — it has been observed to write
+ * "All set!" even when told the booking failed, which is the worst-case
+ * trust-breaking bug.
+ */
+function pickBookingFailureText(lastUserText: string): string {
+  const t = lastUserText ?? "";
+  if (/[\u0600-\u06FF]/.test(t)) {
+    return "معذرت، یہ سلاٹ ابھی *دستیاب نہیں*۔ کوئی اور وقت بتائیں؟";
+  }
+  if (/[\u0900-\u097F]/.test(t)) {
+    return "माफ़ कीजिए, ये स्लॉट अभी *उपलब्ध नहीं* है। कोई और समय बताएँ?";
+  }
+  if (/[\u0621-\u064A]/.test(t)) {
+    return "عذراً، هذا الموعد غير *متاح* حالياً. أي وقت آخر يناسبك؟";
+  }
+  const lower = t.toLowerCase();
+  const romanHits = ["kya", "ka ", "ko ", " ma ", " ha ", "kar", "mujh", "mera", "kasa", "btao", "thora", "abi", "nahi", "kal", "kab"]
+    .filter((w) => lower.includes(w)).length;
+  if (romanHits >= 2) {
+    return "Sorry, wo slot abhi *available nahi* hai. Koi aur time bata dein?";
+  }
+  return "Sorry, that slot is no longer *available*. What other time works?";
+}
+
+/**
+ * Deterministic short filler used only when the planned final reply is a
+ * duplicate of the ack we already sent. Keeps the conversation moving instead
+ * of repeating the same bubble.
+ */
+function pickPostAckFiller(lastUserText: string): string {
+  const t = lastUserText ?? "";
+  if (/[\u0600-\u06FF]/.test(t)) return "ایک سیکنڈ اور…";
+  if (/[\u0900-\u097F]/.test(t)) return "बस एक पल और…";
+  if (/[\u0621-\u064A]/.test(t)) return "لحظة واحدة فقط…";
+  const lower = t.toLowerCase();
+  const romanHits = ["kya", "ka ", "ko ", " ma ", " ha ", "kar", "nahi", "kal"]
+    .filter((w) => lower.includes(w)).length;
+  if (romanHits >= 2) return "bas ek sec aur…";
+  return "just a sec…";
+}
+
+function normalizeForCompare(s: string): string {
+  return (s ?? "")
+    .toLowerCase()
+    .replace(/\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function safeParseAIJson(content: string): AIResponse | null {
   const tryParse = (s: string): AIResponse | null => {
     try { return JSON.parse(s) as AIResponse; } catch { return null; }
