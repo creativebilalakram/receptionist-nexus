@@ -257,48 +257,90 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const action = parsedAI?.booking_action;
         let bookedAppointmentId: string | null = null;
         if (!shouldEscalate && action && action.type !== "none") {
-          const { loadAvailabilityContext, generateSlots, bookAppointment, formatSlotLabel } =
+          const { loadAvailabilityContext, generateSlots, bookAppointment } =
             await import("@/lib/booking-core.server");
 
-          if (action.type === "get_slots") {
-            const from = action.from_iso ? new Date(action.from_iso) : new Date();
-            const days = Math.min(Math.max(action.days ?? 7, 1), 14);
-            const to = new Date(from.getTime() + days * 24 * 60 * 60_000);
+          if (action.type === "check_availability") {
             const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
             if (!("error" in ctx)) {
-              const slots = generateSlots(ctx, from, to, 6);
-              const slotsText = slots.length
-                ? slots.map((s, i) => `${i + 1}. ${s.label} (${s.start})`).join("\n")
-                : "No open slots in that window.";
+              const tz = ctx.timezone;
+              const target = resolveTargetDateTime(
+                action.preferred_date_label ?? null,
+                action.specific_time_local ?? null,
+                tz,
+              );
+              const window = (action.preferred_time_window || "any").toLowerCase();
+
+              // Search range: target day (if any) ± 1 day, else next 7 days
+              const anchor = target.date ?? new Date();
+              const rangeStart = new Date(anchor.getTime() - 24 * 60 * 60_000);
+              const rangeEnd = new Date(anchor.getTime() + 6 * 24 * 60 * 60_000);
+              const allSlots = generateSlots(ctx, rangeStart, rangeEnd, 80);
+
+              // Filter slots to same local day as target (if known)
+              const sameDay = target.localYmd
+                ? allSlots.filter((s) => localYmdInTz(new Date(s.start), tz) === target.localYmd)
+                : allSlots;
+
+              // Filter by time window
+              const windowed = sameDay.filter((s) => matchesWindow(new Date(s.start), tz, window));
+
+              let exactSlot: { start: string; label: string } | null = null;
+              if (target.exactUtcMs) {
+                const hit = allSlots.find(
+                  (s) => Math.abs(new Date(s.start).getTime() - target.exactUtcMs!) < 60_000,
+                );
+                if (hit) exactSlot = { start: hit.start, label: hit.label };
+              }
+
+              // Nearest 2 alternatives — prefer same day, then nearby; sort by closeness to target
+              const pool = (windowed.length ? windowed : sameDay.length ? sameDay : allSlots);
+              const anchorMs = target.exactUtcMs ?? anchor.getTime();
+              const alternatives = pool
+                .filter((s) => !exactSlot || s.start !== exactSlot.start)
+                .map((s) => ({ s, d: Math.abs(new Date(s.start).getTime() - anchorMs) }))
+                .sort((a, b) => a.d - b.d)
+                .slice(0, 2)
+                .map((x) => ({ start: x.s.start, label: x.s.label }));
+
+              const summary = JSON.stringify({
+                user_stated_time: action.user_stated_time ?? null,
+                timezone: tz,
+                exact_available: !!exactSlot,
+                exact_slot: exactSlot,
+                alternatives,
+                window_empty: pool.length === 0,
+              });
+
               aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "get_slots",
-                result: slotsText,
-                timezone: ctx.timezone,
+                tool: "check_availability",
+                result: summary,
+                timezone: tz,
               }) ?? aiReply;
             }
-          } else if (action.type === "book") {
+          } else if (action.type === "book_slot") {
             const result = await bookAppointment(supabaseAdmin, {
               clientId: client.id,
               meetingTypeId: null,
-              startIso: action.start_iso,
-              contactName: action.contact_name ?? data.first_name ?? null,
+              startIso: action.slot_iso_utc,
+              contactName: data.first_name ?? null,
               contactPhone: data.phone ?? null,
               contactEmail: action.contact_email ?? null,
               conversationId: convoId ?? null,
-              notes: action.notes ?? null,
+              notes: null,
               bookedVia: "ai",
             });
             if (result.ok) {
               bookedAppointmentId = result.appointmentId;
               status = "booked";
               aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "book",
+                tool: "book_slot",
                 result: `Booked successfully for ${result.label}.`,
               }) ?? `Booked for *${result.label}*. See you then.`;
             } else {
               aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "book",
-                result: `Could not book: ${result.error}. Offer alternative slots.`,
+                tool: "book_slot",
+                result: `Could not book: ${result.error}. Offer 1-2 nearest alternative slots conversationally.`,
               }) ?? aiReply;
             }
           }
