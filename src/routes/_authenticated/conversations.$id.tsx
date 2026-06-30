@@ -87,6 +87,7 @@ function ConversationDetail() {
               </div>
             ))}
           </div>
+          </div>
         </div>
 
         {/* Sidebar */}
