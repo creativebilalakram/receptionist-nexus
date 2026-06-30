@@ -66,9 +66,11 @@ export type Database = {
           business_name: string
           created_at: string
           faq: string | null
+          icp: string | null
           id: string
           is_active: boolean
           niche: string | null
+          objection_notes: string | null
           owner_id: string
           services: string | null
           slug: string
@@ -83,9 +85,11 @@ export type Database = {
           business_name: string
           created_at?: string
           faq?: string | null
+          icp?: string | null
           id?: string
           is_active?: boolean
           niche?: string | null
+          objection_notes?: string | null
           owner_id: string
           services?: string | null
           slug: string
@@ -100,9 +104,11 @@ export type Database = {
           business_name?: string
           created_at?: string
           faq?: string | null
+          icp?: string | null
           id?: string
           is_active?: boolean
           niche?: string | null
+          objection_notes?: string | null
           owner_id?: string
           services?: string | null
           slug?: string
@@ -125,9 +131,11 @@ export type Database = {
         Row: {
           client_id: string
           created_at: string
+          current_stage: string
           first_name: string | null
           id: string
           last_message_at: string | null
+          last_reasoning: string | null
           lead_score: number
           manual_takeover: boolean
           messages: Json
@@ -139,9 +147,11 @@ export type Database = {
         Insert: {
           client_id: string
           created_at?: string
+          current_stage?: string
           first_name?: string | null
           id?: string
           last_message_at?: string | null
+          last_reasoning?: string | null
           lead_score?: number
           manual_takeover?: boolean
           messages?: Json
@@ -153,9 +163,11 @@ export type Database = {
         Update: {
           client_id?: string
           created_at?: string
+          current_stage?: string
           first_name?: string | null
           id?: string
           last_message_at?: string | null
+          last_reasoning?: string | null
           lead_score?: number
           manual_takeover?: boolean
           messages?: Json
