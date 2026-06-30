@@ -223,13 +223,9 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             aiResponseLog = json;
             if (resp.ok && json?.choices?.[0]?.message?.content) {
               const content = json.choices[0].message.content as string;
-              try {
-                parsedAI = JSON.parse(content) as AIResponse;
-                if (typeof parsedAI.reply === "string" && parsedAI.reply.trim().length > 0) {
-                  aiReply = parsedAI.reply.trim();
-                }
-              } catch {
-                aiReply = content.slice(0, 500);
+              parsedAI = safeParseAIJson(content);
+              if (parsedAI && typeof parsedAI.reply === "string" && parsedAI.reply.trim().length > 0) {
+                aiReply = parsedAI.reply.trim();
               }
             }
           } catch (err) {
