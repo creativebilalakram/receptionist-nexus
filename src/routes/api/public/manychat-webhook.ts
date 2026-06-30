@@ -648,10 +648,19 @@ function normalizeBookingAction(
       : undefined;
   }
 
-  if (action.type === "none" || action.type === "check_availability") return action;
+  if (action.type === "none") return { type: "none" };
+  if (action.type === "check_availability") {
+    return {
+      type: "check_availability",
+      user_stated_time: typeof action.user_stated_time === "string" ? action.user_stated_time : lastUserText,
+      preferred_date_label: typeof action.preferred_date_label === "string" ? action.preferred_date_label : undefined,
+      preferred_time_window: typeof action.preferred_time_window === "string" ? action.preferred_time_window : "any",
+      specific_time_local: typeof action.specific_time_local === "string" ? action.specific_time_local : null,
+    };
+  }
   if (action.type === "book_slot") {
     return typeof action.slot_iso_utc === "string" && action.slot_iso_utc.trim()
-      ? action
+      ? { type: "book_slot", slot_iso_utc: action.slot_iso_utc, contact_email: typeof action.contact_email === "string" ? action.contact_email : null }
       : { type: "none" };
   }
 
