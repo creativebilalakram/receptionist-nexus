@@ -333,7 +333,12 @@ async function processAndSend(
   if (parsedAI?.qualification_update) {
     qualification = { ...qualification, ...parsedAI.qualification_update };
   }
-  if (parsedAI?.status_change) status = parsedAI.status_change;
+  // SAFETY: never let the AI self-declare "booked" — only a successful
+  // book_slot tool insert (below) is allowed to flip status to "booked".
+  // Otherwise the AI can hallucinate "confirm hai" with no DB row.
+  if (parsedAI?.status_change && parsedAI.status_change !== "booked") {
+    status = parsedAI.status_change;
+  }
   if (parsedAI?.stage) currentStage = parsedAI.stage;
   const bantKeys = ["budget", "authority", "need", "timing"] as const;
   leadScore = bantKeys.reduce((acc, k) => acc + (qualification[k] === true ? 25 : 0), 0);
