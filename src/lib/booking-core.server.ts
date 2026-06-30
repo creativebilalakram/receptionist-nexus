@@ -96,7 +96,7 @@ export async function loadAvailabilityContext(
   const [rulesRes, blocksRes, apptsRes] = await Promise.all([
     supabase.from("availability_rules").select("*").eq("client_id", clientId).eq("is_enabled", true),
     supabase.from("blocked_dates").select("*").eq("client_id", clientId),
-    supabase.from("appointments").select("scheduled_at,duration_minutes,meeting_type_id,status")
+    supabase.from("appointments").select("scheduled_at,duration_minutes,meeting_type_id,status,effective_end_at")
       .eq("client_id", clientId).neq("status", "cancelled"),
   ]);
 
