@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import type { Json } from "@/integrations/supabase/types";
-import { sendWhatsAppText } from "@/lib/manychat-send.server";
+import { sendWhatsAppText, sendWhatsAppTextParts } from "@/lib/manychat-send.server";
 
 type SupabaseAdmin = Awaited<ReturnType<typeof loadAdmin>>;
 async function loadAdmin() {
@@ -48,6 +48,7 @@ type BookingAction =
 
 type AIResponse = {
   reply: string;
+  reply_parts?: string[];
   stage?: Stage;
   qualification_update?: {
     budget?: boolean | null;
@@ -427,7 +428,24 @@ async function processAndSend(
   }
 
   aiReply = sanitizeReplyText(aiReply);
-  messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
+
+  // Decide on message parts: prefer model-provided reply_parts, else auto-split.
+  let parts: string[] = [];
+  const modelParts = Array.isArray(parsedAI?.reply_parts)
+    ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
+    : [];
+  if (modelParts.length > 0) {
+    parts = modelParts.slice(0, 3); // hard cap 3 bubbles
+  } else {
+    parts = autoSplitReply(aiReply);
+  }
+  // Final guard: never send empty
+  if (parts.length === 0) parts = [aiReply];
+
+  // Log the full reply text in the conversation as one assistant turn (joined),
+  // so the chat view still reads naturally.
+  const joinedForLog = parts.join("\n\n");
+  messages.push({ role: "assistant", content: joinedForLog, timestamp: new Date().toISOString() });
 
   await supabaseAdmin.from("conversations").update({
     messages: messages as unknown as Json,
@@ -448,14 +466,17 @@ async function processAndSend(
       : {}),
   }).eq("id", convoId!);
 
-  // Push to user via ManyChat Send API (async pattern)
-  const sendRes = await sendWhatsAppText(data.subscriber_id, aiReply);
+  // Push to user via ManyChat Send API as multiple human-like bubbles.
+  const sendRes = parts.length > 1
+    ? await sendWhatsAppTextParts(data.subscriber_id, parts)
+    : await sendWhatsAppText(data.subscriber_id, parts[0]);
 
   await supabaseAdmin.from("webhook_logs").insert({
     client_id: client.id,
     direction: "outbound",
     payload: {
-      reply: aiReply,
+      reply: joinedForLog,
+      parts_count: parts.length,
       parsed: parsedAI,
       ai_status: aiStatusCode || 200,
       manychat_send_ok: sendRes.ok,
@@ -466,6 +487,36 @@ async function processAndSend(
     status_code: sendRes.ok ? 200 : (sendRes.status || 500),
     error: sendRes.ok ? null : sendRes.error,
   });
+}
+
+/**
+ * Auto-split a single reply into 1-2 short WhatsApp bubbles for a human feel.
+ * Splits on double newline first, else on sentence boundary near the midpoint
+ * if the message is long (>180 chars). Never splits short messages.
+ */
+function autoSplitReply(text: string): string[] {
+  const t = (text ?? "").trim();
+  if (!t) return [];
+  // Respect explicit paragraph breaks from the model first.
+  const paraSplit = t.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+  if (paraSplit.length >= 2) return paraSplit.slice(0, 3);
+  // Short message → single bubble.
+  if (t.length <= 180) return [t];
+  // Find sentence boundary nearest the middle.
+  const mid = Math.floor(t.length / 2);
+  const matches = [...t.matchAll(/[.!?؟।]\s+/g)];
+  if (matches.length === 0) return [t];
+  let best = matches[0];
+  let bestDist = Math.abs((best.index ?? 0) - mid);
+  for (const m of matches) {
+    const d = Math.abs((m.index ?? 0) - mid);
+    if (d < bestDist) { best = m; bestDist = d; }
+  }
+  const cut = (best.index ?? 0) + best[0].length;
+  const a = t.slice(0, cut).trim();
+  const b = t.slice(cut).trim();
+  if (!a || !b) return [t];
+  return [a, b];
 }
 
 
@@ -592,23 +643,31 @@ If they book, confirm warmly and set status_change='booked'. If they're cold or 
 
   // BLOCK 3 — TONE & FORMAT RULES
   blocks.push(
-    `TONE & FORMAT RULES (NON-NEGOTIABLE)
-- WhatsApp messages: 1-3 short lines (mostly — soft rule, not hard, but never paragraphs).
-- One question per message. Maximum.
-- Bold the important words using WhatsApp single-asterisk syntax: *word*. Bold only the 1-2 words that carry the meaning of the line — never bold a whole sentence.
-- NEVER use dashes as separators or dividers. No "---", no "—", no "–", no horizontal rules. Structure messages with plain line breaks only. If you need to pause, start a new line.
-- LANGUAGE MIRRORING (critical — detect from their LATEST message every time, and switch if they switch):
-    • English → reply in English.
-    • Roman Urdu / Roman Hindi (Urdu or Hindi written in Latin letters, e.g. "kya price hai", "kasa kam karta ha") → reply in Roman Urdu / Roman Hindi. Do NOT switch to Urdu script. Do NOT switch to formal English.
-    • Urdu script (اردو) → reply in Urdu script.
-    • Hindi script (देवनागरी) → reply in Hindi script.
-    • Arabic (العربية) → reply in Arabic.
-    • Hinglish / code-mix → mirror the same mix back.
-- Match their energy: formal if they're formal, casual if casual.
-- Use their first name occasionally, not in every message.
-- One emoji per 4-5 messages max, and only if it fits.
-- Never use exclamation marks more than once per message.
-- Never start a reply with "Great question!" / "Absolutely!" / "I understand" — these are banned, they sound like a bot.`
+    `TONE & FORMAT RULES (NON-NEGOTIABLE — feel like a sharp human, not a chatbot)
+
+LENGTH (critical — short = human, long = robot):
+- Default reply length: ONE short line. Sometimes two. Rarely three. Never paragraphs.
+- Aim for under ~120 characters per bubble. A real receptionist on WhatsApp types in short, punchy bursts.
+- If a thought genuinely has two beats (e.g. acknowledgement + question, or confirmation + ask), split it into TWO separate bubbles using the "reply_parts" array (see OUTPUT CONTRACT) — like a human sending two quick messages back-to-back. Max 2 bubbles normally, 3 only for the premium first-message opener.
+- When you use reply_parts, EACH bubble must stand alone (no "...continued"), and each must be 1-2 short lines.
+- One question per reply (across all bubbles combined). Never more.
+
+STYLE:
+- Bold the 1-2 words that carry meaning using WhatsApp single-asterisk syntax: *word*. Never bold full sentences.
+- NEVER use dashes as separators or dividers. No "---", no "—", no "–", no horizontal rules. Plain line breaks only.
+- No filler openers. NEVER start with "Great question!" / "Absolutely!" / "I understand" / "Sure thing" / "Of course" — banned.
+- Match their energy: formal if formal, casual if casual. Use their first name occasionally, not every message.
+- One emoji per 4-5 messages MAX, only if it fits. Never more than one exclamation per message.
+
+LANGUAGE MIRRORING (detect from their LATEST message every turn, switch if they switch):
+  • English → English.
+  • Roman Urdu / Roman Hindi (Urdu/Hindi in Latin letters, e.g. "kya price hai", "kasa kam karta ha") → reply in Roman Urdu/Hindi. Do NOT switch to Urdu script. Do NOT switch to formal English.
+  • Urdu script (اردو) → Urdu script.
+  • Hindi script (देवनागरी) → Hindi script.
+  • Arabic (العربية) → Arabic.
+  • Hinglish / code-mix → mirror the same mix back.
+
+INTELLIGENCE SIGNAL — sound smart by being SPECIFIC, not by being LONG. Reference the exact thing they just said. Skip generic acknowledgements. Get to the point in 6-12 words when possible.`
   );
 
   // BLOCK 4 — BANNED PHRASES & BEHAVIORS
@@ -724,7 +783,8 @@ CRITICAL RULES:
 OUTPUT CONTRACT (strict JSON, no markdown)
 Respond with ONLY a JSON object, no markdown fences, no prose:
 {
-  "reply": "<your WhatsApp message to the user>",
+  "reply": "<single-bubble fallback — used only if reply_parts is empty>",
+  "reply_parts": ["<bubble 1>", "<bubble 2 (optional)>", "<bubble 3 (only for first-message opener)>"],
   "stage": "open" | "discover" | "qualify" | "position" | "invite" | "objection" | "close" | "park",
   "qualification_update": {
     "need": true | false | null,
@@ -741,7 +801,13 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
       { "type": "none" }
     | { "type": "check_availability", "user_stated_time": "<verbatim>", "preferred_date_label": "<label?>", "preferred_time_window": "morning|afternoon|evening|specific_time|any", "specific_time_local": "<HH:MM|null>" }
     | { "type": "book_slot", "slot_iso_utc": "<iso>", "contact_email": "<email|null>" }
-}`
+}
+
+REPLY_PARTS RULES:
+- ALWAYS prefer reply_parts over reply for natural human bursts.
+- 1 bubble = simple acknowledgement or single question. 2 bubbles = ack + question, OR statement + question. 3 bubbles = ONLY the premium first-message opener.
+- Each bubble independently follows tone rules (short, *bold* keywords, no dashes, mirrored language).
+- "reply" should still contain the full text (parts joined) as a fallback.`
   );
 
   return blocks.join("\n\n");
