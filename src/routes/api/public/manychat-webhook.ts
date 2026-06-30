@@ -292,29 +292,30 @@ async function processAndSend(
     })),
   ];
 
-  const aiKey = process.env.LOVABLE_API_KEY;
+  const aiKey = process.env.OPENAI_API_KEY;
+  const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
   let aiReply = FALLBACK;
   let parsedAI: AIResponse | null = null;
   let aiResponseLog: unknown = null;
   let aiStatusCode = 0;
 
   if (!aiKey) {
-    aiResponseLog = { error: "missing_LOVABLE_API_KEY" };
+    aiResponseLog = { error: "missing_OPENAI_API_KEY" };
   } else {
     try {
       const { retryFetch } = await import("@/lib/retry");
-      const resp = await retryFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const resp = await retryFetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "Lovable-API-Key": aiKey,
+          "Authorization": `Bearer ${aiKey}`,
         },
         body: JSON.stringify({
-          model: "google/gemini-3-flash-preview",
+          model: aiModel,
           messages: aiMessages,
           response_format: { type: "json_object" },
         }),
-      }, { attempts: 3, baseMs: 500, timeoutMs: 18_000, label: "ai-gateway-main" });
+      }, { attempts: 3, baseMs: 500, timeoutMs: 18_000, label: "openai-main" });
       aiStatusCode = resp.status;
       const json = await resp.json().catch(() => null);
       aiResponseLog = json;
@@ -617,11 +618,12 @@ async function draftBookingReply(
   if (!aiKey) return null;
   try {
     const { retryFetch } = await import("@/lib/retry");
-    const resp = await retryFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const resp = await retryFetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { "content-type": "application/json", "Lovable-API-Key": aiKey },
+      headers: { "content-type": "application/json", "Authorization": `Bearer ${aiKey}` },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: aiModel,
         messages: [
           { role: "system", content: systemPrompt },
           ...messages.map((m) => ({ role: m.role, content: m.content })),
@@ -631,7 +633,7 @@ async function draftBookingReply(
           },
         ],
       }),
-    }, { attempts: 3, baseMs: 500, timeoutMs: 15_000, label: "ai-gateway-booking" });
+    }, { attempts: 3, baseMs: 500, timeoutMs: 15_000, label: "openai-booking" });
     const json = await resp.json().catch(() => null);
     const txt = json?.choices?.[0]?.message?.content;
     if (typeof txt === "string" && txt.trim().length) return txt.trim();
