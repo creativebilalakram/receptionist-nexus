@@ -136,7 +136,6 @@ async function generateFollowup(args: {
   const aiKey = process.env.OPENAI_API_KEY;
   if (!aiKey) return null;
   const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
-...
       body: JSON.stringify({
         model: aiModel,
         messages: [
