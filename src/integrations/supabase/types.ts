@@ -14,7 +14,228 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      appointments: {
+        Row: {
+          client_id: string
+          conversation_id: string | null
+          created_at: string
+          id: string
+          notes: string | null
+          scheduled_at: string
+          status: string
+        }
+        Insert: {
+          client_id: string
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          scheduled_at: string
+          status?: string
+        }
+        Update: {
+          client_id?: string
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          scheduled_at?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "appointments_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "appointments_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      clients: {
+        Row: {
+          booking_link: string | null
+          business_hours: string | null
+          business_name: string
+          created_at: string
+          faq: string | null
+          id: string
+          is_active: boolean
+          niche: string | null
+          owner_id: string
+          services: string | null
+          slug: string
+          system_prompt_override: string | null
+          timezone: string
+          tone_notes: string | null
+          webhook_secret: string
+        }
+        Insert: {
+          booking_link?: string | null
+          business_hours?: string | null
+          business_name: string
+          created_at?: string
+          faq?: string | null
+          id?: string
+          is_active?: boolean
+          niche?: string | null
+          owner_id: string
+          services?: string | null
+          slug: string
+          system_prompt_override?: string | null
+          timezone?: string
+          tone_notes?: string | null
+          webhook_secret?: string
+        }
+        Update: {
+          booking_link?: string | null
+          business_hours?: string | null
+          business_name?: string
+          created_at?: string
+          faq?: string | null
+          id?: string
+          is_active?: boolean
+          niche?: string | null
+          owner_id?: string
+          services?: string | null
+          slug?: string
+          system_prompt_override?: string | null
+          timezone?: string
+          tone_notes?: string | null
+          webhook_secret?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clients_owner_id_fkey"
+            columns: ["owner_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conversations: {
+        Row: {
+          client_id: string
+          created_at: string
+          first_name: string | null
+          id: string
+          last_message_at: string | null
+          lead_score: number
+          manual_takeover: boolean
+          messages: Json
+          phone: string | null
+          qualification: Json
+          status: string
+          subscriber_id: string
+        }
+        Insert: {
+          client_id: string
+          created_at?: string
+          first_name?: string | null
+          id?: string
+          last_message_at?: string | null
+          lead_score?: number
+          manual_takeover?: boolean
+          messages?: Json
+          phone?: string | null
+          qualification?: Json
+          status?: string
+          subscriber_id: string
+        }
+        Update: {
+          client_id?: string
+          created_at?: string
+          first_name?: string | null
+          id?: string
+          last_message_at?: string | null
+          lead_score?: number
+          manual_takeover?: boolean
+          messages?: Json
+          phone?: string | null
+          qualification?: Json
+          status?: string
+          subscriber_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversations_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          agency_name: string | null
+          created_at: string
+          full_name: string | null
+          id: string
+        }
+        Insert: {
+          agency_name?: string | null
+          created_at?: string
+          full_name?: string | null
+          id: string
+        }
+        Update: {
+          agency_name?: string | null
+          created_at?: string
+          full_name?: string | null
+          id?: string
+        }
+        Relationships: []
+      }
+      webhook_logs: {
+        Row: {
+          client_id: string | null
+          created_at: string
+          direction: string
+          error: string | null
+          id: string
+          payload: Json | null
+          response: Json | null
+          status_code: number | null
+        }
+        Insert: {
+          client_id?: string | null
+          created_at?: string
+          direction: string
+          error?: string | null
+          id?: string
+          payload?: Json | null
+          response?: Json | null
+          status_code?: number | null
+        }
+        Update: {
+          client_id?: string | null
+          created_at?: string
+          direction?: string
+          error?: string | null
+          id?: string
+          payload?: Json | null
+          response?: Json | null
+          status_code?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "webhook_logs_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
