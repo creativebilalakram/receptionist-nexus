@@ -181,10 +181,13 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
 
         const isFirstEverMessage = priorMessageCount === 0;
         const systemPrompt = buildSystemPrompt(client as ClientRow, data.first_name ?? null, isFirstEverMessage);
-        // TEMP: memory disabled — only send the current user message, no prior history
+        // Memory ON: include full prior conversation history for context
         const aiMessages = [
           { role: "system" as const, content: systemPrompt },
-          { role: "user" as const, content: data.message_text },
+          ...messages.map((m) => ({
+            role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+            content: m.content,
+          })),
         ];
 
         const aiKey = process.env.LOVABLE_API_KEY;
