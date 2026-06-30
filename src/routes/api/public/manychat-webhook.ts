@@ -161,10 +161,10 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         }
 
         const systemPrompt = buildSystemPrompt(client as ClientRow, data.first_name ?? null);
-        const trimmed = messages.slice(-20);
+        // TEMP: memory disabled — only send the current user message, no prior history
         const aiMessages = [
           { role: "system" as const, content: systemPrompt },
-          ...trimmed.map((m) => ({ role: m.role, content: m.content })),
+          { role: "user" as const, content: data.message_text },
         ];
 
         const aiKey = process.env.LOVABLE_API_KEY;
