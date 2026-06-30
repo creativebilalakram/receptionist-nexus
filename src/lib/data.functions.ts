@@ -1,6 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
+import type { Json } from "@/integrations/supabase/types";
+
 
 export const dashboardStats = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
@@ -125,6 +127,34 @@ export const listClientLogs = createServerFn({ method: "GET" })
       .order("created_at", { ascending: false }).limit(50);
     if (error) throw new Error(error.message);
     return rows ?? [];
+  });
+
+export const listWebhookFailures = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { data: clients } = await context.supabase
+      .from("clients").select("id, business_name").eq("owner_id", context.userId);
+    const ids = (clients ?? []).map((c) => c.id);
+    const nameMap = new Map<string, string>((clients ?? []).map((c) => [c.id, c.business_name]));
+    type FailureRow = {
+      id: string; client_id: string | null; client_name: string;
+      direction: string; status_code: number | null; error: string | null;
+      payload: Json; response: Json; created_at: string;
+    };
+    if (ids.length === 0) return [] as FailureRow[];
+    const { data, error } = await context.supabase
+      .from("webhook_logs")
+      .select("id, client_id, direction, status_code, error, payload, response, created_at")
+      .in("client_id", ids)
+      .or("status_code.gte.400,error.not.is.null")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (error) throw new Error(error.message);
+    const rows: FailureRow[] = (data ?? []).map((r) => ({
+      ...r,
+      client_name: (r.client_id && nameMap.get(r.client_id)) || "—",
+    }));
+    return rows;
   });
 
 export const listAppointments = createServerFn({ method: "GET" })

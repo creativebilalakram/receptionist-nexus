@@ -50,14 +50,15 @@ export async function sendWhatsAppText(
   if (opts?.messageTag) body.message_tag = opts.messageTag;
 
   try {
-    const resp = await fetch(ENDPOINT, {
+    const { retryFetch } = await import("@/lib/retry");
+    const resp = await retryFetch(ENDPOINT, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-    });
+    }, { attempts: 3, baseMs: 500, timeoutMs: 12_000, label: "manychat-send" });
     const json = await resp.json().catch(() => null);
     if (!resp.ok) {
       return {
