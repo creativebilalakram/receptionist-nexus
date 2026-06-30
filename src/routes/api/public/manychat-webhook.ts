@@ -48,6 +48,7 @@ type BookingAction =
 
 type AIResponse = {
   reply: string;
+  reply_parts?: string[];
   stage?: Stage;
   qualification_update?: {
     budget?: boolean | null;
