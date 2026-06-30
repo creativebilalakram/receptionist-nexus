@@ -333,7 +333,12 @@ async function processAndSend(
   if (parsedAI?.qualification_update) {
     qualification = { ...qualification, ...parsedAI.qualification_update };
   }
-  if (parsedAI?.status_change) status = parsedAI.status_change;
+  // SAFETY: never let the AI self-declare "booked" — only a successful
+  // book_slot tool insert (below) is allowed to flip status to "booked".
+  // Otherwise the AI can hallucinate "confirm hai" with no DB row.
+  if (parsedAI?.status_change && parsedAI.status_change !== "booked") {
+    status = parsedAI.status_change;
+  }
   if (parsedAI?.stage) currentStage = parsedAI.stage;
   const bantKeys = ["budget", "authority", "need", "timing"] as const;
   leadScore = bantKeys.reduce((acc, k) => acc + (qualification[k] === true ? 25 : 0), 0);
@@ -840,6 +845,8 @@ CRITICAL RULES:
 - NEVER offer a slot the backend didn't return in the most recent availability result.
 - Always state the timezone label naturally when giving a time.
 - booking_action = { "type": "none" } for any non-booking turn.
+- **HARD RULE — NO FAKE CONFIRMATIONS**: NEVER write any sentence that claims a booking is confirmed / booked / "ho gayi" / "set hai" / "invite bhej diya" / "calendar invite sent" UNLESS this same turn includes a successful book_slot TOOL_RESULT. If the user asks "did you book it?" / "kya ho gayi booking?" and you have not actually run book_slot AND received a success result, you MUST say plainly that you have not booked it yet and ask for the time they want — never pretend it is done. Hallucinating a confirmation is the single worst failure mode and will break trust.
+- **NEVER set status_change="booked"** unless this turn has a successful book_slot TOOL_RESULT. The backend will ignore it anyway, but do not even write it.
 
 OUTPUT CONTRACT (strict JSON, no markdown)
 Respond with ONLY a JSON object, no markdown fences, no prose:
