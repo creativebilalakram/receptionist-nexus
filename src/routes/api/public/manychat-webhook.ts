@@ -342,8 +342,29 @@ async function processAndSend(
   if (shouldEscalate) status = "escalated";
 
   // ---- BOOKING TOOL LOOP ----
+  // Bookings hit DB + a second AI call, often 5-15s. Send an immediate
+  // "let me check..." ack bubble first so the user sees activity, then
+  // continue with the real work and send the final answer as bubble #2.
+  let ackSent = false;
   const action = parsedAI?.booking_action;
   if (!shouldEscalate && action && action.type !== "none") {
+    const ackText = pickAckText(parsedAI?.reply, data.message_text, action.type);
+    if (ackText) {
+      const ackRes = await sendWhatsAppText(data.subscriber_id, ackText);
+      if (ackRes.ok) {
+        ackSent = true;
+        // Log ack as its own assistant turn so the chat view feels human too.
+        messages.push({ role: "assistant", content: ackText, timestamp: new Date().toISOString() });
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id,
+          direction: "outbound",
+          payload: { reply: ackText, kind: "ack_bubble", booking_action: action.type } as unknown as Json,
+          response: { manychat: ackRes.body ?? null } as Json,
+          status_code: 200,
+        });
+      }
+    }
+
     const { loadAvailabilityContext, generateSlots, bookAppointment } =
       await import("@/lib/booking-core.server");
 
@@ -426,6 +447,9 @@ async function processAndSend(
       }
     }
   }
+  // Mark that an ack was already pushed so the final send skips re-sending it.
+  void ackSent;
+
 
   aiReply = sanitizeReplyText(aiReply);
 
@@ -549,6 +573,43 @@ async function draftBookingReply(
     if (typeof txt === "string" && txt.trim().length) return txt.trim();
   } catch { /* ignore */ }
   return null;
+}
+
+/**
+ * Pick a short, language-aware "let me check..." ack bubble for slow tool calls.
+ * Prefers the AI's first-pass `reply` (it's prompted to provide a brief holding
+ * phrase), but only if it's actually short and not the full answer.
+ * Falls back to a localized template based on the user's last message script.
+ */
+function pickAckText(
+  aiFirstPass: string | undefined,
+  lastUserText: string,
+  actionType: "check_availability" | "book_slot",
+): string {
+  const candidate = (aiFirstPass ?? "").trim();
+  // Use AI's holding phrase only if it's genuinely short (< 90 chars, 1 line).
+  if (candidate && candidate.length <= 90 && !candidate.includes("\n")) {
+    return candidate;
+  }
+  // Detect script / language from the last user message.
+  const t = lastUserText ?? "";
+  if (/[\u0600-\u06FF]/.test(t)) {
+    return actionType === "book_slot" ? "ایک سیکنڈ، بُک کر رہا ہوں…" : "ایک سیکنڈ، چیک کرتا ہوں…";
+  }
+  if (/[\u0900-\u097F]/.test(t)) {
+    return actionType === "book_slot" ? "एक सेकंड, बुक कर रहा हूँ…" : "एक सेकंड, चेक करता हूँ…";
+  }
+  if (/[\u0621-\u064A]/.test(t)) {
+    return actionType === "book_slot" ? "لحظة، أحجز لك الآن…" : "لحظة، أتحقق لك…";
+  }
+  // Roman Urdu heuristic
+  const lower = t.toLowerCase();
+  const romanHits = ["kya", "ka ", "ko ", " ma ", " ha ", "kar", "mujh", "mera", "kasa", "btao", "thora", "abi", "nahi"]
+    .filter((w) => lower.includes(w)).length;
+  if (romanHits >= 2) {
+    return actionType === "book_slot" ? "ek sec, *book* kar raha hun…" : "ek sec, *check* karta hun…";
+  }
+  return actionType === "book_slot" ? "one sec, *booking* it now…" : "one sec, let me *check*…";
 }
 
 function safeParseAIJson(content: string): AIResponse | null {
