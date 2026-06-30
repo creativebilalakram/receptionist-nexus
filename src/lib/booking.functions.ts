@@ -163,6 +163,7 @@ export const updateBookingSettings = createServerFn({ method: "POST" })
     min_notice_minutes: z.number().int().min(0).max(10080).optional(),
     max_advance_days: z.number().int().min(1).max(365).optional(),
     cancellation_window_hours: z.number().int().min(0).max(168).optional(),
+    auto_buffer_after_minutes: z.number().int().min(0).max(60).optional(),
     reminder_hours_before: z.number().int().min(0).max(168).optional(),
     second_reminder_hours_before: z.number().int().min(0).max(72).optional(),
     confirmation_template: z.string().max(2000).optional(),
