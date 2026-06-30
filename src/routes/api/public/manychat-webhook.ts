@@ -342,8 +342,29 @@ async function processAndSend(
   if (shouldEscalate) status = "escalated";
 
   // ---- BOOKING TOOL LOOP ----
+  // Bookings hit DB + a second AI call, often 5-15s. Send an immediate
+  // "let me check..." ack bubble first so the user sees activity, then
+  // continue with the real work and send the final answer as bubble #2.
+  let ackSent = false;
   const action = parsedAI?.booking_action;
   if (!shouldEscalate && action && action.type !== "none") {
+    const ackText = pickAckText(parsedAI?.reply, data.message_text, action.type);
+    if (ackText) {
+      const ackRes = await sendWhatsAppText(data.subscriber_id, ackText);
+      if (ackRes.ok) {
+        ackSent = true;
+        // Log ack as its own assistant turn so the chat view feels human too.
+        messages.push({ role: "assistant", content: ackText, timestamp: new Date().toISOString() });
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id,
+          direction: "outbound",
+          payload: { reply: ackText, kind: "ack_bubble", booking_action: action.type } as unknown as Json,
+          response: { manychat: ackRes.body ?? null } as Json,
+          status_code: 200,
+        });
+      }
+    }
+
     const { loadAvailabilityContext, generateSlots, bookAppointment } =
       await import("@/lib/booking-core.server");
 
@@ -426,6 +447,9 @@ async function processAndSend(
       }
     }
   }
+  // Mark that an ack was already pushed so the final send skips re-sending it.
+  void ackSent;
+
 
   aiReply = sanitizeReplyText(aiReply);
 
