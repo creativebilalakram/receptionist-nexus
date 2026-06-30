@@ -434,6 +434,20 @@ function safeParseAIJson(content: string): AIResponse | null {
   return null;
 }
 
+function sanitizeReplyText(text: string): string {
+  if (!text) return text;
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("```")) {
+    const parsed = safeParseAIJson(trimmed);
+    if (parsed && typeof (parsed as { reply?: unknown }).reply === "string") {
+      return ((parsed as { reply: string }).reply).trim();
+    }
+  }
+  return trimmed;
+}
+
+
+
 
 function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
   const blocks: string[] = [];
