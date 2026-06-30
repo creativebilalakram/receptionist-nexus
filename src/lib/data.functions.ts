@@ -139,7 +139,7 @@ export const listWebhookFailures = createServerFn({ method: "GET" })
     type FailureRow = {
       id: string; client_id: string | null; client_name: string;
       direction: string; status_code: number | null; error: string | null;
-      payload: unknown; response: unknown; created_at: string;
+      payload: Json; response: Json; created_at: string;
     };
     if (ids.length === 0) return [] as FailureRow[];
     const { data, error } = await context.supabase
