@@ -477,7 +477,8 @@ async function draftBookingReply(
 ): Promise<string | null> {
   if (!aiKey) return null;
   try {
-    const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const { retryFetch } = await import("@/lib/retry");
+    const resp = await retryFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json", "Lovable-API-Key": aiKey },
       body: JSON.stringify({
@@ -491,7 +492,7 @@ async function draftBookingReply(
           },
         ],
       }),
-    });
+    }, { attempts: 3, baseMs: 500, timeoutMs: 15_000, label: "ai-gateway-booking" });
     const json = await resp.json().catch(() => null);
     const txt = json?.choices?.[0]?.message?.content;
     if (typeof txt === "string" && txt.trim().length) return txt.trim();
