@@ -1,0 +1,2 @@
+ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS followup_sent_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_conversations_followup_candidates ON public.conversations (last_message_at) WHERE followup_sent_at IS NULL;
