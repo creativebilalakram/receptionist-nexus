@@ -3,8 +3,8 @@ import { useSuspenseQuery, queryOptions, useQueryClient } from "@tanstack/react-
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, Check, X, CircleDashed, CalendarPlus } from "lucide-react";
-import { getConversation, updateConversationStatus, createAppointment } from "@/lib/data.functions";
+import { ArrowLeft, Check, X, CircleDashed, CalendarPlus, AlertTriangle, PlayCircle } from "lucide-react";
+import { getConversation, updateConversationStatus, createAppointment, resumeAI } from "@/lib/data.functions";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
