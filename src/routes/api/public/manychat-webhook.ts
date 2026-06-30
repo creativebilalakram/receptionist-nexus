@@ -428,7 +428,24 @@ async function processAndSend(
   }
 
   aiReply = sanitizeReplyText(aiReply);
-  messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
+
+  // Decide on message parts: prefer model-provided reply_parts, else auto-split.
+  let parts: string[] = [];
+  const modelParts = Array.isArray(parsedAI?.reply_parts)
+    ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
+    : [];
+  if (modelParts.length > 0) {
+    parts = modelParts.slice(0, 3); // hard cap 3 bubbles
+  } else {
+    parts = autoSplitReply(aiReply);
+  }
+  // Final guard: never send empty
+  if (parts.length === 0) parts = [aiReply];
+
+  // Log the full reply text in the conversation as one assistant turn (joined),
+  // so the chat view still reads naturally.
+  const joinedForLog = parts.join("\n\n");
+  messages.push({ role: "assistant", content: joinedForLog, timestamp: new Date().toISOString() });
 
   await supabaseAdmin.from("conversations").update({
     messages: messages as unknown as Json,
@@ -449,14 +466,17 @@ async function processAndSend(
       : {}),
   }).eq("id", convoId!);
 
-  // Push to user via ManyChat Send API (async pattern)
-  const sendRes = await sendWhatsAppText(data.subscriber_id, aiReply);
+  // Push to user via ManyChat Send API as multiple human-like bubbles.
+  const sendRes = parts.length > 1
+    ? await sendWhatsAppTextParts(data.subscriber_id, parts)
+    : await sendWhatsAppText(data.subscriber_id, parts[0]);
 
   await supabaseAdmin.from("webhook_logs").insert({
     client_id: client.id,
     direction: "outbound",
     payload: {
-      reply: aiReply,
+      reply: joinedForLog,
+      parts_count: parts.length,
       parsed: parsedAI,
       ai_status: aiStatusCode || 200,
       manychat_send_ok: sendRes.ok,
@@ -467,6 +487,36 @@ async function processAndSend(
     status_code: sendRes.ok ? 200 : (sendRes.status || 500),
     error: sendRes.ok ? null : sendRes.error,
   });
+}
+
+/**
+ * Auto-split a single reply into 1-2 short WhatsApp bubbles for a human feel.
+ * Splits on double newline first, else on sentence boundary near the midpoint
+ * if the message is long (>180 chars). Never splits short messages.
+ */
+function autoSplitReply(text: string): string[] {
+  const t = (text ?? "").trim();
+  if (!t) return [];
+  // Respect explicit paragraph breaks from the model first.
+  const paraSplit = t.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+  if (paraSplit.length >= 2) return paraSplit.slice(0, 3);
+  // Short message → single bubble.
+  if (t.length <= 180) return [t];
+  // Find sentence boundary nearest the middle.
+  const mid = Math.floor(t.length / 2);
+  const matches = [...t.matchAll(/[.!?؟।]\s+/g)];
+  if (matches.length === 0) return [t];
+  let best = matches[0];
+  let bestDist = Math.abs((best.index ?? 0) - mid);
+  for (const m of matches) {
+    const d = Math.abs((m.index ?? 0) - mid);
+    if (d < bestDist) { best = m; bestDist = d; }
+  }
+  const cut = (best.index ?? 0) + best[0].length;
+  const a = t.slice(0, cut).trim();
+  const b = t.slice(cut).trim();
+  if (!a || !b) return [t];
+  return [a, b];
 }
 
 
