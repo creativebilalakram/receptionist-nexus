@@ -91,6 +91,17 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200,
         });
 
+        // TEMP allowlist: only reply to this phone number for now
+        const ALLOWED_PHONES = ["3447306520"]; // last 10 digits, country code ignored
+        const normalized = (data.phone ?? "").replace(/\D/g, "");
+        const last10 = normalized.slice(-10);
+        if (!ALLOWED_PHONES.includes(last10)) {
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200, error: "phone_not_allowlisted",
+          });
+          return new Response(JSON.stringify({ ai_reply: "" }), { headers: cors });
+        }
+
         // Upsert conversation
         const nowIso = new Date().toISOString();
         const { data: existing } = await supabaseAdmin
