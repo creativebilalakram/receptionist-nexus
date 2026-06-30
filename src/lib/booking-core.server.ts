@@ -222,8 +222,12 @@ export async function bookAppointment(
   if (Number.isNaN(start.getTime())) return { ok: false, error: "invalid_start" };
   const end = addMinutes(start, ctx.meetingType.duration_minutes);
 
-  // Re-check the slot is still inside availability + free
-  const validSlots = generateSlots(ctx, addMinutes(start, -1), addMinutes(end, 1), 5);
+  // Re-check the slot is still inside availability + free.
+  // Use a wide range (full day around the slot) so the footprint check in
+  // generateSlots doesn't falsely reject an otherwise-free slot near the edge.
+  const dayStart = new Date(start.getTime() - 24 * 60 * 60 * 1000);
+  const dayEnd = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const validSlots = generateSlots(ctx, dayStart, dayEnd, 500);
   const ok = validSlots.some((s) => Math.abs(new Date(s.start).getTime() - start.getTime()) < 60_000);
   if (!ok) return { ok: false, error: "slot_unavailable" };
 
