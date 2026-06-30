@@ -155,25 +155,29 @@ export function generateSlots(
     if (rule) {
       const winStart = zonedTimeToUtc(dateStr, rule.start_time.slice(0, 5), timezone);
       const winEnd = zonedTimeToUtc(dateStr, rule.end_time.slice(0, 5), timezone);
-      const step = SLOT_STEP_MIN;
       const dur = meetingType.duration_minutes;
-      const bb = meetingType.buffer_before_minutes;
-      const ba = meetingType.buffer_after_minutes;
+      const bb = meetingType.buffer_before_minutes ?? 0;
+      const ba = meetingType.buffer_after_minutes ?? 0;
+      const autoBuf = settings.auto_buffer_after_minutes ?? 15;
+      const step = computeStepMinutes(meetingType, settings);
+      // Full footprint occupied on the calendar (invisible to lead).
+      const footprint = dur + ba + autoBuf;
 
-      for (let t = new Date(winStart); addMinutes(t, dur) <= winEnd; t = addMinutes(t, step)) {
+      for (let t = new Date(winStart); addMinutes(t, footprint) <= winEnd; t = addMinutes(t, step)) {
         if (slots.length >= maxSlots) break;
         const slotStart = t;
-        const slotEnd = addMinutes(t, dur);
-        if (slotStart < lowerBound || slotEnd > upperBound) continue;
+        const slotEnd = addMinutes(t, dur); // user-facing end
+        const occupyEnd = addMinutes(t, footprint); // calendar footprint
+        if (slotStart < lowerBound || occupyEnd > upperBound) continue;
 
         const blockHit = blocks.some((b) => {
           const bs = new Date(b.start_at), be = new Date(b.end_at);
-          return slotStart < be && slotEnd > bs;
+          return slotStart < be && occupyEnd > bs;
         });
         if (blockHit) continue;
 
         const conflictStart = addMinutes(slotStart, -bb);
-        const conflictEnd = addMinutes(slotEnd, ba);
+        const conflictEnd = occupyEnd;
         const busyHit = busy.some((x) => conflictStart < x.end && conflictEnd > x.start);
         if (busyHit) continue;
 
