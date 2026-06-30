@@ -111,6 +111,34 @@ function ConversationDetail() {
             </div>
           </div>
 
+          {conv.escalated && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-5 space-y-3">
+              <div className="flex items-center gap-2 text-amber-500">
+                <AlertTriangle className="h-4 w-4" />
+                <h2 className="text-sm font-semibold">Escalated to human</h2>
+              </div>
+              {conv.escalation_reason && (
+                <p className="text-xs text-foreground/90">{conv.escalation_reason}</p>
+              )}
+              {conv.escalated_at && (
+                <p className="font-mono text-[10px] text-muted-foreground">{formatDateTime(conv.escalated_at)}</p>
+              )}
+              <p className="text-xs text-muted-foreground">AI replies are paused. Incoming messages are still logged here for you.</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full justify-start"
+                onClick={async () => {
+                  await resume({ data: { id } });
+                  queryClient.invalidateQueries({ queryKey: ["conversation", id] });
+                  toast.success("AI resumed");
+                }}
+              >
+                <PlayCircle className="mr-1.5 h-3.5 w-3.5" /> Resume AI
+              </Button>
+            </div>
+          )}
+
           <div className="rounded-xl border border-border bg-card p-5">
             <div className="flex items-center justify-between">
               <div>
