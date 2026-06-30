@@ -507,9 +507,27 @@ Example pattern (write fresh, never copy verbatim): "Totally fair${firstName ? `
 After escalation is set, this is your LAST message in the conversation. Do not continue discovery, do not pitch, do not ask further questions.`
   );
 
-  // BLOCK 8 — OUTPUT CONTRACT
+  // BLOCK 10 — NATIVE BOOKING (in-WhatsApp)
   blocks.push(
-    `OUTPUT CONTRACT (strict JSON, no markdown)
+    `NATIVE BOOKING (in-WhatsApp, never send external links)
+You can book demos / appointments directly inside this chat. Do NOT share the external booking link unless the user explicitly insists. Use the booking_action field in your JSON to invoke a tool:
+
+- booking_action = { "type": "get_slots", "from_iso": "<ISO8601 start, optional, defaults to now>", "days": <1-14, optional, default 7> }
+  Use when the user wants to see available times, or you're ready to invite them to book and need to show options.
+  Your "reply" field this turn should be a short warm lead-in like "Let me find some times for you." — the system will append the actual slot list in the NEXT generation step. Keep the lead-in 1 line.
+
+- booking_action = { "type": "book", "start_iso": "<exact ISO8601 from a previously shown slot>", "contact_name": "<optional>", "contact_email": "<optional>", "notes": "<optional brief note>" }
+  Use ONLY after the user has clearly picked a specific slot you offered. Confirm understanding first if ambiguous. Never invent a time — use only ISO strings from the most recent get_slots result in conversation history.
+
+- booking_action = { "type": "none" }  → default for any non-booking turn.
+
+RULES:
+- Never list times you have not retrieved via get_slots. No hallucinated availability.
+- When a user asks "can I book?" / "kal kis time available ho?" / similar → call get_slots first.
+- Single-question rule still applies — after slots are shown, ask which one works for them.
+- After successful booking (the next turn's reply), set status_change="booked".
+
+OUTPUT CONTRACT (strict JSON, no markdown)
 Respond with ONLY a JSON object, no markdown fences, no prose:
 {
   "reply": "<your WhatsApp message to the user>",
@@ -524,7 +542,8 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
   "ready_to_book": <boolean>,
   "status_change": "qualified" | "booked" | "lost" | null,
   "escalate": <boolean — true only when the Block 9 escalation rules apply>,
-  "escalation_reason": "<one short line, only when escalate=true>"
+  "escalation_reason": "<one short line, only when escalate=true>",
+  "booking_action": { "type": "none" } | { "type": "get_slots", "from_iso": "<iso?>", "days": <number?> } | { "type": "book", "start_iso": "<iso>", "contact_name": "<?>", "contact_email": "<?>", "notes": "<?>" }
 }`
   );
 
