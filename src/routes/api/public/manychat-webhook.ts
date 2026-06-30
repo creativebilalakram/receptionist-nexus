@@ -176,7 +176,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             phone: data.phone ?? existing?.phone ?? null,
             first_name: data.first_name ?? existing?.first_name ?? null,
           }).eq("id", convoId!);
-          return new Response(JSON.stringify({ ai_reply: "" }), { headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "STOP" }), { headers: cors });
         }
 
         const isFirstEverMessage = priorMessageCount === 0;
