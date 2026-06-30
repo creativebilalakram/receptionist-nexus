@@ -656,6 +656,23 @@ function sanitizeReplyText(text: string): string {
 
 function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
   const blocks: string[] = [];
+  const tz = client.timezone || "UTC";
+  const now = new Date();
+  const todayLocal = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, weekday: "long", year: "numeric", month: "long", day: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true,
+  }).format(now);
+  const todayYmd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(now);
+
+  // BLOCK 0 — TIME ANCHOR (critical — prevents date drift to training cutoff)
+  blocks.push(
+    `CURRENT TIME ANCHOR (use this — do NOT guess from training data)
+Right now it is: ${todayLocal} (${tz}).
+Today's date is ${todayYmd}.
+When the user says "tomorrow", "kal", "next week", etc., resolve relative to THIS date — never to any other year. ALL slot_iso_utc values you emit MUST be on or after today.`
+  );
 
   // BLOCK 1 — IDENTITY & ROLE
   blocks.push(
