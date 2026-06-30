@@ -783,7 +783,8 @@ CRITICAL RULES:
 OUTPUT CONTRACT (strict JSON, no markdown)
 Respond with ONLY a JSON object, no markdown fences, no prose:
 {
-  "reply": "<your WhatsApp message to the user>",
+  "reply": "<single-bubble fallback — used only if reply_parts is empty>",
+  "reply_parts": ["<bubble 1>", "<bubble 2 (optional)>", "<bubble 3 (only for first-message opener)>"],
   "stage": "open" | "discover" | "qualify" | "position" | "invite" | "objection" | "close" | "park",
   "qualification_update": {
     "need": true | false | null,
@@ -800,7 +801,13 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
       { "type": "none" }
     | { "type": "check_availability", "user_stated_time": "<verbatim>", "preferred_date_label": "<label?>", "preferred_time_window": "morning|afternoon|evening|specific_time|any", "specific_time_local": "<HH:MM|null>" }
     | { "type": "book_slot", "slot_iso_utc": "<iso>", "contact_email": "<email|null>" }
-}`
+}
+
+REPLY_PARTS RULES:
+- ALWAYS prefer reply_parts over reply for natural human bursts.
+- 1 bubble = simple acknowledgement or single question. 2 bubbles = ack + question, OR statement + question. 3 bubbles = ONLY the premium first-message opener.
+- Each bubble independently follows tone rules (short, *bold* keywords, no dashes, mirrored language).
+- "reply" should still contain the full text (parts joined) as a fallback.`
   );
 
   return blocks.join("\n\n");
