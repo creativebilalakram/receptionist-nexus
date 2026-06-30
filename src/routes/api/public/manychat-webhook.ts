@@ -123,7 +123,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         });
 
         // TEMP allowlist: only reply to this phone number for now
-        const ALLOWED_PHONES = ["3447306520"];
+        const ALLOWED_PHONES = ["3447306520", "3260660523"];
         const normalized = (data.phone ?? "").replace(/\D/g, "");
         const last10 = normalized.slice(-10);
         if (!ALLOWED_PHONES.includes(last10)) {
