@@ -34,6 +34,7 @@ function ConversationDetail() {
   const { data: conv } = useSuspenseQuery(convOpts(id));
   const queryClient = useQueryClient();
   const updateStatus = useServerFn(updateConversationStatus);
+  const resume = useServerFn(resumeAI);
 
   const messages: Msg[] = Array.isArray(conv.messages) ? (conv.messages as unknown as Msg[]) : [];
   const qual = (conv.qualification ?? {}) as Qualification;
