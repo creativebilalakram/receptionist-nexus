@@ -11,7 +11,15 @@ export type Slot = { start: string; end: string; label: string };
 export type MeetingType = Database["public"]["Tables"]["meeting_types"]["Row"];
 export type BookingSettings = Database["public"]["Tables"]["booking_settings"]["Row"];
 
-const SLOT_STEP_MIN = 15;
+// Slot stepping is derived from meeting footprint, never hardcoded.
+// step = meeting.duration + meeting.buffer_before + meeting.buffer_after + booking_settings.auto_buffer_after
+function computeStepMinutes(mt: MeetingType, settings: BookingSettings): number {
+  const dur = mt.duration_minutes ?? 30;
+  const bb = mt.buffer_before_minutes ?? 0;
+  const ba = mt.buffer_after_minutes ?? 0;
+  const auto = settings.auto_buffer_after_minutes ?? 15;
+  return Math.max(5, dur + bb + ba + auto);
+}
 
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
