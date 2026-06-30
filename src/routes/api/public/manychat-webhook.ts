@@ -15,6 +15,11 @@ const FALLBACK = "Give me one moment, let me check on that for you.";
 
 type Stage = "open" | "discover" | "qualify" | "position" | "invite" | "objection" | "close" | "park";
 
+type BookingAction =
+  | { type: "get_slots"; from_iso?: string; days?: number }
+  | { type: "book"; start_iso: string; contact_name?: string; contact_email?: string; notes?: string }
+  | { type: "none" };
+
 type AIResponse = {
   reply: string;
   stage?: Stage;
@@ -29,6 +34,7 @@ type AIResponse = {
   status_change?: "qualified" | "booked" | "lost" | null;
   escalate?: boolean;
   escalation_reason?: string;
+  booking_action?: BookingAction;
 };
 
 type Msg = { role: "user" | "assistant"; content: string; timestamp: string };
@@ -244,6 +250,58 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           status = "escalated";
         }
 
+        // ---- BOOKING TOOL LOOP ----
+        // If AI requested a booking action, execute it and ask the model to draft a final reply.
+        const action = parsedAI?.booking_action;
+        let bookedAppointmentId: string | null = null;
+        if (!shouldEscalate && action && action.type !== "none") {
+          const { loadAvailabilityContext, generateSlots, bookAppointment, formatSlotLabel } =
+            await import("@/lib/booking-core.server");
+
+          if (action.type === "get_slots") {
+            const from = action.from_iso ? new Date(action.from_iso) : new Date();
+            const days = Math.min(Math.max(action.days ?? 7, 1), 14);
+            const to = new Date(from.getTime() + days * 24 * 60 * 60_000);
+            const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
+            if (!("error" in ctx)) {
+              const slots = generateSlots(ctx, from, to, 6);
+              const slotsText = slots.length
+                ? slots.map((s, i) => `${i + 1}. ${s.label} (${s.start})`).join("\n")
+                : "No open slots in that window.";
+              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+                tool: "get_slots",
+                result: slotsText,
+                timezone: ctx.timezone,
+              }) ?? aiReply;
+            }
+          } else if (action.type === "book") {
+            const result = await bookAppointment(supabaseAdmin, {
+              clientId: client.id,
+              meetingTypeId: null,
+              startIso: action.start_iso,
+              contactName: action.contact_name ?? data.first_name ?? null,
+              contactPhone: data.phone ?? null,
+              contactEmail: action.contact_email ?? null,
+              conversationId: convoId ?? null,
+              notes: action.notes ?? null,
+              bookedVia: "ai",
+            });
+            if (result.ok) {
+              bookedAppointmentId = result.appointmentId;
+              status = "booked";
+              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+                tool: "book",
+                result: `Booked successfully for ${result.label}.`,
+              }) ?? `Booked for *${result.label}*. See you then.`;
+            } else {
+              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+                tool: "book",
+                result: `Could not book: ${result.error}. Offer alternative slots.`,
+              }) ?? aiReply;
+            }
+          }
+        }
+
         messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
 
         await supabaseAdmin.from("conversations").update({
@@ -278,6 +336,37 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
     },
   },
 });
+
+async function draftBookingReply(
+  aiKey: string | undefined,
+  systemPrompt: string,
+  messages: Msg[],
+  toolResult: { tool: string; result: string; timezone?: string },
+): Promise<string | null> {
+  if (!aiKey) return null;
+  try {
+    const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "Lovable-API-Key": aiKey },
+      body: JSON.stringify({
+        model: "google/gemini-3-flash-preview",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages.map((m) => ({ role: m.role, content: m.content })),
+          {
+            role: "system",
+            content: `TOOL_RESULT (${toolResult.tool})${toolResult.timezone ? ` [timezone: ${toolResult.timezone}]` : ""}:\n${toolResult.result}\n\nNow draft ONLY the final WhatsApp reply text (no JSON, no preamble). Follow all tone rules. If presenting slots, list them as a short numbered list using the human-readable label only (drop the ISO). If the booking succeeded, confirm warmly in 1-2 lines.`,
+          },
+        ],
+      }),
+    });
+    const json = await resp.json().catch(() => null);
+    const txt = json?.choices?.[0]?.message?.content;
+    if (typeof txt === "string" && txt.trim().length) return txt.trim();
+  } catch { /* ignore */ }
+  return null;
+}
+
 
 function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
   const blocks: string[] = [];
@@ -418,9 +507,27 @@ Example pattern (write fresh, never copy verbatim): "Totally fair${firstName ? `
 After escalation is set, this is your LAST message in the conversation. Do not continue discovery, do not pitch, do not ask further questions.`
   );
 
-  // BLOCK 8 — OUTPUT CONTRACT
+  // BLOCK 10 — NATIVE BOOKING (in-WhatsApp)
   blocks.push(
-    `OUTPUT CONTRACT (strict JSON, no markdown)
+    `NATIVE BOOKING (in-WhatsApp, never send external links)
+You can book demos / appointments directly inside this chat. Do NOT share the external booking link unless the user explicitly insists. Use the booking_action field in your JSON to invoke a tool:
+
+- booking_action = { "type": "get_slots", "from_iso": "<ISO8601 start, optional, defaults to now>", "days": <1-14, optional, default 7> }
+  Use when the user wants to see available times, or you're ready to invite them to book and need to show options.
+  Your "reply" field this turn should be a short warm lead-in like "Let me find some times for you." — the system will append the actual slot list in the NEXT generation step. Keep the lead-in 1 line.
+
+- booking_action = { "type": "book", "start_iso": "<exact ISO8601 from a previously shown slot>", "contact_name": "<optional>", "contact_email": "<optional>", "notes": "<optional brief note>" }
+  Use ONLY after the user has clearly picked a specific slot you offered. Confirm understanding first if ambiguous. Never invent a time — use only ISO strings from the most recent get_slots result in conversation history.
+
+- booking_action = { "type": "none" }  → default for any non-booking turn.
+
+RULES:
+- Never list times you have not retrieved via get_slots. No hallucinated availability.
+- When a user asks "can I book?" / "kal kis time available ho?" / similar → call get_slots first.
+- Single-question rule still applies — after slots are shown, ask which one works for them.
+- After successful booking (the next turn's reply), set status_change="booked".
+
+OUTPUT CONTRACT (strict JSON, no markdown)
 Respond with ONLY a JSON object, no markdown fences, no prose:
 {
   "reply": "<your WhatsApp message to the user>",
@@ -435,7 +542,8 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
   "ready_to_book": <boolean>,
   "status_change": "qualified" | "booked" | "lost" | null,
   "escalate": <boolean — true only when the Block 9 escalation rules apply>,
-  "escalation_reason": "<one short line, only when escalate=true>"
+  "escalation_reason": "<one short line, only when escalate=true>",
+  "booking_action": { "type": "none" } | { "type": "get_slots", "from_iso": "<iso?>", "days": <number?> } | { "type": "book", "start_iso": "<iso>", "contact_name": "<?>", "contact_email": "<?>", "notes": "<?>" }
 }`
   );
 
