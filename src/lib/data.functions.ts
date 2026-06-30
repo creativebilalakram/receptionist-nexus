@@ -133,12 +133,13 @@ export const listWebhookFailures = createServerFn({ method: "GET" })
     const { data: clients } = await context.supabase
       .from("clients").select("id, business_name").eq("owner_id", context.userId);
     const ids = (clients ?? []).map((c) => c.id);
-    const nameMap = new Map((clients ?? []).map((c) => [c.id, c.business_name]));
-    if (ids.length === 0) return [] as Array<{
-      id: string; client_id: string; client_name: string;
+    const nameMap = new Map<string, string>((clients ?? []).map((c) => [c.id, c.business_name]));
+    type FailureRow = {
+      id: string; client_id: string | null; client_name: string;
       direction: string; status_code: number | null; error: string | null;
       payload: unknown; response: unknown; created_at: string;
-    }>;
+    };
+    if (ids.length === 0) return [] as FailureRow[];
     const { data, error } = await context.supabase
       .from("webhook_logs")
       .select("id, client_id, direction, status_code, error, payload, response, created_at")
@@ -147,7 +148,11 @@ export const listWebhookFailures = createServerFn({ method: "GET" })
       .order("created_at", { ascending: false })
       .limit(100);
     if (error) throw new Error(error.message);
-    return (data ?? []).map((r) => ({ ...r, client_name: nameMap.get(r.client_id) ?? "—" }));
+    const rows: FailureRow[] = (data ?? []).map((r) => ({
+      ...r,
+      client_name: (r.client_id && nameMap.get(r.client_id)) || "—",
+    }));
+    return rows;
   });
 
 export const listAppointments = createServerFn({ method: "GET" })
