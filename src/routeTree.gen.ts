@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthenticatedFailuresRouteImport } from './routes/_authenticated/failures'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedAppointmentsRouteImport } from './routes/_authenticated/appointments'
 import { Route as AuthenticatedClientsIndexRouteImport } from './routes/_authenticated/clients.index'
@@ -34,6 +35,11 @@ const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedFailuresRoute = AuthenticatedFailuresRouteImport.update({
+  id: '/failures',
+  path: '/failures',
+  getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   id: '/dashboard',
@@ -86,6 +92,7 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/appointments': typeof AuthenticatedAppointmentsRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/failures': typeof AuthenticatedFailuresRoute
   '/clients/$id': typeof AuthenticatedClientsIdRoute
   '/clients/new': typeof AuthenticatedClientsNewRoute
   '/conversations/$id': typeof AuthenticatedConversationsIdRoute
@@ -98,6 +105,7 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/appointments': typeof AuthenticatedAppointmentsRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/failures': typeof AuthenticatedFailuresRoute
   '/clients/$id': typeof AuthenticatedClientsIdRoute
   '/clients/new': typeof AuthenticatedClientsNewRoute
   '/conversations/$id': typeof AuthenticatedConversationsIdRoute
@@ -112,6 +120,7 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/_authenticated/appointments': typeof AuthenticatedAppointmentsRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/failures': typeof AuthenticatedFailuresRoute
   '/_authenticated/clients/$id': typeof AuthenticatedClientsIdRoute
   '/_authenticated/clients/new': typeof AuthenticatedClientsNewRoute
   '/_authenticated/conversations/$id': typeof AuthenticatedConversationsIdRoute
@@ -126,6 +135,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/appointments'
     | '/dashboard'
+    | '/failures'
     | '/clients/$id'
     | '/clients/new'
     | '/conversations/$id'
@@ -138,6 +148,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/appointments'
     | '/dashboard'
+    | '/failures'
     | '/clients/$id'
     | '/clients/new'
     | '/conversations/$id'
@@ -151,6 +162,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/_authenticated/appointments'
     | '/_authenticated/dashboard'
+    | '/_authenticated/failures'
     | '/_authenticated/clients/$id'
     | '/_authenticated/clients/new'
     | '/_authenticated/conversations/$id'
@@ -189,6 +201,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/failures': {
+      id: '/_authenticated/failures'
+      path: '/failures'
+      fullPath: '/failures'
+      preLoaderRoute: typeof AuthenticatedFailuresRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/dashboard': {
       id: '/_authenticated/dashboard'
@@ -252,6 +271,7 @@ declare module '@tanstack/react-router' {
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedAppointmentsRoute: typeof AuthenticatedAppointmentsRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedFailuresRoute: typeof AuthenticatedFailuresRoute
   AuthenticatedClientsIdRoute: typeof AuthenticatedClientsIdRoute
   AuthenticatedClientsNewRoute: typeof AuthenticatedClientsNewRoute
   AuthenticatedConversationsIdRoute: typeof AuthenticatedConversationsIdRoute
@@ -261,6 +281,7 @@ interface AuthenticatedRouteRouteChildren {
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAppointmentsRoute: AuthenticatedAppointmentsRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedFailuresRoute: AuthenticatedFailuresRoute,
   AuthenticatedClientsIdRoute: AuthenticatedClientsIdRoute,
   AuthenticatedClientsNewRoute: AuthenticatedClientsNewRoute,
   AuthenticatedConversationsIdRoute: AuthenticatedConversationsIdRoute,

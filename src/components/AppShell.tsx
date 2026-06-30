@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Users,
   CalendarDays,
+  AlertTriangle,
   LogOut,
   PanelLeft,
 } from "lucide-react";
@@ -30,6 +31,7 @@ const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/clients", label: "Clients", icon: Users },
   { to: "/appointments", label: "Appointments", icon: CalendarDays },
+  { to: "/failures", label: "Failures", icon: AlertTriangle },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
