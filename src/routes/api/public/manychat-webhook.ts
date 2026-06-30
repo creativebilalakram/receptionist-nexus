@@ -1,6 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import type { Json } from "@/integrations/supabase/types";
+import { runAfterResponse } from "@/lib/cf-context";
+import { sendWhatsAppText } from "@/lib/manychat-send.server";
+
+type SupabaseAdmin = Awaited<ReturnType<typeof loadAdmin>>;
+async function loadAdmin() {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  return supabaseAdmin;
+}
+
 
 const Payload = z.object({
   client_id: z.string().uuid(),
