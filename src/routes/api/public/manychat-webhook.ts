@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
+import type { Json } from "@/integrations/supabase/types";
 
 const Payload = z.object({
   client_id: z.string().uuid(),
@@ -111,7 +112,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             subscriber_id: data.subscriber_id,
             phone: data.phone ?? null,
             first_name: data.first_name ?? null,
-            messages: messages as unknown as object,
+            messages: messages as unknown as Json,
             last_message_at: nowIso,
           }).select("id").single();
           if (insErr || !newRow) {
@@ -123,7 +124,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         if (manualTakeover) {
           // Save user msg but don't generate AI reply
           await supabaseAdmin.from("conversations").update({
-            messages: messages as unknown as object,
+            messages: messages as unknown as Json,
             last_message_at: nowIso,
             phone: data.phone ?? existing?.phone ?? null,
             first_name: data.first_name ?? existing?.first_name ?? null,
@@ -194,8 +195,8 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
 
         await supabaseAdmin.from("conversations").update({
-          messages: messages as unknown as object,
-          qualification: qualification as unknown as object,
+          messages: messages as unknown as Json,
+          qualification: qualification as unknown as Json,
           lead_score: leadScore,
           status,
           last_message_at: new Date().toISOString(),
