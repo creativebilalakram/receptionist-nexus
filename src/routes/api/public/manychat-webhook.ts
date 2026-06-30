@@ -15,6 +15,11 @@ const FALLBACK = "Give me one moment, let me check on that for you.";
 
 type Stage = "open" | "discover" | "qualify" | "position" | "invite" | "objection" | "close" | "park";
 
+type BookingAction =
+  | { type: "get_slots"; from_iso?: string; days?: number }
+  | { type: "book"; start_iso: string; contact_name?: string; contact_email?: string; notes?: string }
+  | { type: "none" };
+
 type AIResponse = {
   reply: string;
   stage?: Stage;
@@ -29,6 +34,7 @@ type AIResponse = {
   status_change?: "qualified" | "booked" | "lost" | null;
   escalate?: boolean;
   escalation_reason?: string;
+  booking_action?: BookingAction;
 };
 
 type Msg = { role: "user" | "assistant"; content: string; timestamp: string };
