@@ -345,7 +345,13 @@ async function processAndSend(
   // "let me check..." ack bubble first so the user sees activity, then
   // continue with the real work and send the final answer as bubble #2.
   let ackSent = false;
-  const action = normalizeBookingAction(parsedAI?.booking_action, parsedAI, messages, data.message_text);
+  let action = normalizeBookingAction(parsedAI?.booking_action, parsedAI, messages, data.message_text);
+  // SAFETY: if the conversation is already booked, ignore any new booking
+  // action the AI emits (e.g. on "thanks"). Re-running book_slot for an
+  // already-taken slot otherwise produces a "no longer available" reply.
+  if (action && action.type !== "none" && existing?.status === "booked") {
+    action = { type: "none" };
+  }
   let toolFinalReply = false;
   if (!shouldEscalate && action && action.type !== "none") {
     const ackText = pickAckText(parsedAI?.reply, data.message_text, action.type);
@@ -455,41 +461,50 @@ async function processAndSend(
       }
 
       if (!validatedIso && !("error" in ctx)) {
-        validatedIso = resolveSlotFromConversation(ctx, messages, data.message_text, generateSlots);
-        if (validatedIso) {
-          await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id,
-            direction: "outbound",
-            payload: {
-              kind: "book_slot_recovered_from_text",
-              proposed_iso: action.slot_iso_utc,
-              recovered_iso: validatedIso,
-            } as unknown as Json,
-            status_code: 200,
-          });
-        }
-      }
+        // STRICT: do NOT silently book a different time than what the user asked for.
+        // If the proposed ISO isn't a real slot, compose an availability-style
+        // reply offering the nearest 1-2 REAL slots so the user can confirm.
+        const tz = ctx.timezone;
+        const anchorMs = !Number.isNaN(proposedMs) ? proposedMs : Date.now();
+        const rs = new Date(anchorMs - 24 * 60 * 60_000);
+        const re = new Date(anchorMs + 24 * 60 * 60_000);
+        const slots = generateSlots(ctx, rs, re, 200);
+        const dayYmd = !Number.isNaN(proposedMs) ? localYmdInTz(new Date(proposedMs), tz) : null;
+        const sameDay = dayYmd ? slots.filter((s) => localYmdInTz(new Date(s.start), tz) === dayYmd) : slots;
+        const pool = sameDay.length ? sameDay : slots;
+        const alternatives = pool
+          .map((s) => ({ s, d: Math.abs(new Date(s.start).getTime() - anchorMs) }))
+          .sort((a, b) => a.d - b.d)
+          .slice(0, 2)
+          .map((x) => ({ start: x.s.start, label: x.s.label }));
 
-      if (!validatedIso) {
-        // Deterministic failure reply — DO NOT let the AI write this, it
-        // hallucinates "All set!" even when told the booking failed.
-        aiReply = pickBookingFailureText(data.message_text);
+        aiReply = composeAvailabilityReply(
+          {
+            user_stated_time: data.message_text,
+            timezone: tz,
+            exact_available: false,
+            exact_slot: null,
+            alternatives,
+            window_empty: alternatives.length === 0,
+          },
+          data.message_text,
+        );
+        toolFinalReply = true;
         await supabaseAdmin.from("webhook_logs").insert({
           client_id: client.id,
           direction: "outbound",
           payload: {
-            kind: "book_slot_validation_failed",
+            kind: "book_slot_proposed_iso_not_real_slot",
             proposed_iso: action.slot_iso_utc,
-            reason: !Number.isNaN(proposedMs) && proposedMs <= nowMs - 5 * 60_000 ? "past_or_too_close" : "slot_not_in_availability",
+            offered_alternatives: alternatives.map((a) => a.start),
           } as unknown as Json,
-          status_code: 422,
+          status_code: 200,
         });
-        toolFinalReply = true;
       } else {
         const result = await bookAppointment(supabaseAdmin, {
           clientId: client.id,
           meetingTypeId: null,
-          startIso: validatedIso,
+          startIso: validatedIso!,
           contactName: data.first_name ?? null,
           contactPhone: data.phone ?? null,
           contactEmail: action.contact_email ?? null,
@@ -1220,9 +1235,10 @@ STEP 5 — Pass 2 receives booking confirmation. Send a warm confirmation. If yo
 CRITICAL RULES:
 - NEVER present more than 2 time options in any single message.
 - NEVER use numbered lists or bullets for slots — keep it conversational ("2:30 or 4pm same day" not "1. 2:30pm  2. 4pm").
-- NEVER offer a slot the backend didn't return in the most recent availability result.
+- **NEVER invent or guess a clock time.** Only state specific times (e.g. "2pm", "14:30") that came from the most recent check_availability TOOL_RESULT in this conversation. If you do not have a tool result yet, ask for their preference instead — do NOT make up "available" times.
 - Always state the timezone label naturally when giving a time.
 - booking_action = { "type": "none" } for any non-booking turn.
+- **AFTER A BOOKING IS CONFIRMED** (status="booked" or you have just seen a successful book_slot TOOL_RESULT earlier in this thread): do NOT emit another booking_action. Reply conversationally (thanks, follow-up questions, scheduling notes). Only emit a new booking_action if the user EXPLICITLY asks to reschedule, change, or cancel — in which case acknowledge and ask for the new preferred time first.
 - **HARD RULE — NO FAKE CONFIRMATIONS**: NEVER write any sentence that claims a booking is confirmed / booked / "ho gayi" / "set hai" / "invite bhej diya" / "calendar invite sent" UNLESS this same turn includes a successful book_slot TOOL_RESULT. If the user asks "did you book it?" / "kya ho gayi booking?" and you have not actually run book_slot AND received a success result, you MUST say plainly that you have not booked it yet and ask for the time they want — never pretend it is done. Hallucinating a confirmation is the single worst failure mode and will break trust.
 - **NEVER set status_change="booked"** unless this turn has a successful book_slot TOOL_RESULT. The backend will ignore it anyway, but do not even write it.
 
