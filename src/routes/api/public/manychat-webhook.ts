@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import type { Json } from "@/integrations/supabase/types";
-import type { AvailabilityContext, Slot } from "@/lib/booking-core.server";
 import { sendWhatsAppText, sendWhatsAppTextParts } from "@/lib/manychat-send.server";
 
 type SupabaseAdmin = Awaited<ReturnType<typeof loadAdmin>>;
@@ -807,10 +806,10 @@ function pickAvailabilityFailureText(lastUserText: string): string {
 }
 
 function resolveSlotFromConversation(
-  ctx: AvailabilityContext,
+  ctx: { timezone: string },
   messages: Msg[],
   lastUserText: string,
-  generateSlotsFn: (ctx: AvailabilityContext, rangeStart: Date, rangeEnd: Date, maxSlots?: number) => Slot[],
+  generateSlotsFn: (ctx: never, rangeStart: Date, rangeEnd: Date, maxSlots?: number) => Array<{ start: string; label: string }>,
 ): string | null {
   const wanted = inferWantedHour(lastUserText, messages);
   if (wanted == null) return null;
@@ -818,7 +817,7 @@ function resolveSlotFromConversation(
   const dateLabel = inferPreferredDateLabel({}, messages, lastUserText) ?? "tomorrow";
   const target = resolveTargetDateTime(dateLabel, null, ctx.timezone);
   const anchor = target.date ?? new Date();
-  const slots = generateSlotsFn(ctx, new Date(anchor.getTime() - 24 * 60 * 60_000), new Date(anchor.getTime() + 6 * 24 * 60 * 60_000), 120);
+  const slots = generateSlotsFn(ctx as never, new Date(anchor.getTime() - 24 * 60 * 60_000), new Date(anchor.getTime() + 6 * 24 * 60 * 60_000), 120);
   const daySlots = target.localYmd
     ? slots.filter((s) => localYmdInTz(new Date(s.start), ctx.timezone) === target.localYmd)
     : slots;
