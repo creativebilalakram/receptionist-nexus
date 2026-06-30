@@ -427,33 +427,92 @@ async function processAndSend(
         }) ?? aiReply;
       }
     } else if (action.type === "book_slot") {
-      const result = await bookAppointment(supabaseAdmin, {
-        clientId: client.id,
-        meetingTypeId: null,
-        startIso: action.slot_iso_utc,
-        contactName: data.first_name ?? null,
-        contactPhone: data.phone ?? null,
-        contactEmail: action.contact_email ?? null,
-        conversationId: convoId ?? null,
-        notes: null,
-        bookedVia: "ai",
-      });
-      if (result.ok) {
-        status = "booked";
-        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-          tool: "book_slot",
-          result: `Booked successfully for ${result.label}.`,
-        }) ?? `Booked for *${result.label}*. See you then.`;
+      // HARD VALIDATE the AI-proposed slot before touching the DB.
+      // The AI has been known to hallucinate year/date — reject anything
+      // that isn't a valid future ISO within max_advance_days.
+      const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
+      const proposed = new Date(action.slot_iso_utc);
+      const proposedMs = proposed.getTime();
+      const nowMs = Date.now();
+      let validatedIso: string | null = null;
+
+      if ("error" in ctx) {
+        // Settings missing — fail soft.
+      } else if (!Number.isNaN(proposedMs) && proposedMs > nowMs - 5 * 60_000) {
+        // Try to find this exact slot (±1 min) in a freshly generated window
+        // around the proposed time. This catches both stale ISOs and
+        // hallucinated-year ISOs (which fall outside the window entirely).
+        const rs = new Date(proposedMs - 24 * 60 * 60_000);
+        const re = new Date(proposedMs + 24 * 60 * 60_000);
+        const slots = generateSlots(ctx, rs, re, 200);
+        const hit = slots.find(
+          (s) => Math.abs(new Date(s.start).getTime() - proposedMs) < 60_000,
+        );
+        if (hit) validatedIso = hit.start;
+      }
+
+      if (!validatedIso) {
+        // Deterministic failure reply — DO NOT let the AI write this, it
+        // hallucinates "All set!" even when told the booking failed.
+        aiReply = pickBookingFailureText(data.message_text);
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id,
+          direction: "outbound",
+          payload: {
+            kind: "book_slot_validation_failed",
+            proposed_iso: action.slot_iso_utc,
+            reason: !Number.isNaN(proposedMs) && proposedMs <= nowMs - 5 * 60_000 ? "past_or_too_close" : "slot_not_in_availability",
+          } as unknown as Json,
+          status_code: 422,
+        });
       } else {
-        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-          tool: "book_slot",
-          result: `Could not book: ${result.error}. Offer 1-2 nearest alternative slots conversationally.`,
-        }) ?? aiReply;
+        const result = await bookAppointment(supabaseAdmin, {
+          clientId: client.id,
+          meetingTypeId: null,
+          startIso: validatedIso,
+          contactName: data.first_name ?? null,
+          contactPhone: data.phone ?? null,
+          contactEmail: action.contact_email ?? null,
+          conversationId: convoId ?? null,
+          notes: null,
+          bookedVia: "ai",
+        });
+        if (result.ok) {
+          status = "booked";
+          aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+            tool: "book_slot",
+            result: `Booked successfully for ${result.label}.`,
+          }) ?? `Booked for *${result.label}*. See you then.`;
+        } else {
+          // Same deterministic failure path — never trust AI for failure copy.
+          aiReply = pickBookingFailureText(data.message_text);
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id,
+            direction: "outbound",
+            payload: { kind: "book_slot_db_failed", error: result.error, iso: validatedIso } as unknown as Json,
+            status_code: 422,
+          });
+        }
       }
     }
   }
   // Mark that an ack was already pushed so the final send skips re-sending it.
   void ackSent;
+
+  // Dedupe: if the final reply is identical or a substring-prefix match of the
+  // ack we already sent, replace it with a deterministic short follow-up so the
+  // user doesn't see the same bubble twice.
+  if (ackSent) {
+    const lastAck = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant") return messages[i].content;
+      }
+      return "";
+    })();
+    if (lastAck && normalizeForCompare(aiReply) === normalizeForCompare(lastAck)) {
+      aiReply = pickPostAckFiller(data.message_text);
+    }
+  }
 
 
   aiReply = sanitizeReplyText(aiReply);
