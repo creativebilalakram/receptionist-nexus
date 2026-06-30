@@ -16,8 +16,14 @@ const FALLBACK = "Give me one moment, let me check on that for you.";
 type Stage = "open" | "discover" | "qualify" | "position" | "invite" | "objection" | "close" | "park";
 
 type BookingAction =
-  | { type: "get_slots"; from_iso?: string; days?: number }
-  | { type: "book"; start_iso: string; contact_name?: string; contact_email?: string; notes?: string }
+  | {
+      type: "check_availability";
+      user_stated_time?: string;
+      preferred_date_label?: string;
+      preferred_time_window?: "morning" | "afternoon" | "evening" | "specific_time" | "any" | string;
+      specific_time_local?: string | null;
+    }
+  | { type: "book_slot"; slot_iso_utc: string; contact_email?: string | null }
   | { type: "none" };
 
 type AIResponse = {
