@@ -166,7 +166,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             client_id: client.id, direction: "outbound",
             payload: { skipped: "escalated" } as unknown as Json, status_code: 200,
           });
-          return new Response(JSON.stringify({ ai_reply: "", skip_send: true }), { headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "STOP", skip_send: true }), { headers: cors });
         }
 
         if (manualTakeover) {
