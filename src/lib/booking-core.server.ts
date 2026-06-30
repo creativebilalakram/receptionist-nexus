@@ -227,11 +227,16 @@ export async function bookAppointment(
   const ok = validSlots.some((s) => Math.abs(new Date(s.start).getTime() - start.getTime()) < 60_000);
   if (!ok) return { ok: false, error: "slot_unavailable" };
 
+  const ba = ctx.meetingType.buffer_after_minutes ?? 0;
+  const autoBuf = ctx.settings.auto_buffer_after_minutes ?? 15;
+  const effectiveEnd = addMinutes(start, ctx.meetingType.duration_minutes + ba + autoBuf);
+
   const { data, error } = await supabase.from("appointments").insert({
     client_id: args.clientId,
     meeting_type_id: ctx.meetingType.id,
     scheduled_at: start.toISOString(),
     duration_minutes: ctx.meetingType.duration_minutes,
+    effective_end_at: effectiveEnd.toISOString(),
     contact_name: args.contactName ?? null,
     contact_phone: args.contactPhone ?? null,
     contact_email: args.contactEmail ?? null,
