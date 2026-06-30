@@ -35,16 +35,19 @@ const FALLBACK = "Give me one moment, let me check on that for you.";
 
 type Stage = "open" | "discover" | "qualify" | "position" | "invite" | "objection" | "close" | "park";
 
-type BookingAction =
+type CheckAvailabilityAction =
   | {
       type: "check_availability";
       user_stated_time?: string;
       preferred_date_label?: string;
       preferred_time_window?: "morning" | "afternoon" | "evening" | "specific_time" | "any" | string;
       specific_time_local?: string | null;
-    }
-  | { type: "book_slot"; slot_iso_utc: string; contact_email?: string | null }
-  | { type: "none" };
+    };
+
+type BookSlotAction = { type: "book_slot"; slot_iso_utc: string; contact_email?: string | null };
+type NoBookingAction = { type: "none" };
+type NormalizedBookingAction = CheckAvailabilityAction | BookSlotAction | NoBookingAction;
+type BookingAction = NormalizedBookingAction | ({ type: string } & Record<string, unknown>);
 
 type AIResponse = {
   reply: string;
@@ -342,7 +345,8 @@ async function processAndSend(
   // "let me check..." ack bubble first so the user sees activity, then
   // continue with the real work and send the final answer as bubble #2.
   let ackSent = false;
-  const action = parsedAI?.booking_action;
+  const action = normalizeBookingAction(parsedAI?.booking_action, parsedAI, messages, data.message_text);
+  let toolFinalReply = false;
   if (!shouldEscalate && action && action.type !== "none") {
     const ackText = pickAckText(parsedAI?.reply, data.message_text, action.type);
     if (ackText) {
@@ -402,20 +406,28 @@ async function processAndSend(
           .slice(0, 2)
           .map((x) => ({ start: x.s.start, label: x.s.label }));
 
-        const summary = JSON.stringify({
+        const availability = {
           user_stated_time: action.user_stated_time ?? null,
           timezone: tz,
           exact_available: !!exactSlot,
           exact_slot: exactSlot,
           alternatives,
           window_empty: pool.length === 0,
-        });
+        };
 
-        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-          tool: "check_availability",
-          result: summary,
-          timezone: tz,
-        }) ?? aiReply;
+        // Production reliability: do not wait on a second AI call for slot copy.
+        // The backend already knows the truth; compose the final useful reply deterministically.
+        aiReply = composeAvailabilityReply(availability, data.message_text);
+        toolFinalReply = true;
+      } else {
+        aiReply = pickAvailabilityFailureText(data.message_text);
+        toolFinalReply = true;
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id,
+          direction: "outbound",
+          payload: { kind: "availability_context_failed", error: ctx.error } as unknown as Json,
+          status_code: 422,
+        });
       }
     } else if (action.type === "book_slot") {
       // HARD VALIDATE the AI-proposed slot before touching the DB.
@@ -442,6 +454,22 @@ async function processAndSend(
         if (hit) validatedIso = hit.start;
       }
 
+      if (!validatedIso && !("error" in ctx)) {
+        validatedIso = resolveSlotFromConversation(ctx, messages, data.message_text);
+        if (validatedIso) {
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id,
+            direction: "outbound",
+            payload: {
+              kind: "book_slot_recovered_from_text",
+              proposed_iso: action.slot_iso_utc,
+              recovered_iso: validatedIso,
+            } as unknown as Json,
+            status_code: 200,
+          });
+        }
+      }
+
       if (!validatedIso) {
         // Deterministic failure reply — DO NOT let the AI write this, it
         // hallucinates "All set!" even when told the booking failed.
@@ -456,6 +484,7 @@ async function processAndSend(
           } as unknown as Json,
           status_code: 422,
         });
+        toolFinalReply = true;
       } else {
         const result = await bookAppointment(supabaseAdmin, {
           clientId: client.id,
@@ -470,10 +499,8 @@ async function processAndSend(
         });
         if (result.ok) {
           status = "booked";
-          aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-            tool: "book_slot",
-            result: `Booked successfully for ${result.label}.`,
-          }) ?? `Booked for *${result.label}*. See you then.`;
+          aiReply = composeBookingSuccessReply(result.label, data.message_text, action.contact_email ?? null);
+          toolFinalReply = true;
         } else {
           // Same deterministic failure path — never trust AI for failure copy.
           aiReply = pickBookingFailureText(data.message_text);
@@ -483,6 +510,7 @@ async function processAndSend(
             payload: { kind: "book_slot_db_failed", error: result.error, iso: validatedIso } as unknown as Json,
             status_code: 422,
           });
+          toolFinalReply = true;
         }
       }
     }
@@ -510,7 +538,7 @@ async function processAndSend(
 
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
   let parts: string[] = [];
-  const modelParts = Array.isArray(parsedAI?.reply_parts)
+  const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
     ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
     : [];
   if (modelParts.length > 0) {
