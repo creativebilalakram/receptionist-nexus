@@ -30,8 +30,11 @@ export async function sendWhatsAppText(
     return { ok: false, status: 0, error: "empty_text" };
   }
 
-  const body = {
-    subscriber_id: subscriberId,
+  const numericSubscriberId = Number(subscriberId);
+  const body: Record<string, unknown> = {
+    // ManyChat API schema expects an integer here. Full Contact Data sends it
+    // as a string, so normalize before pushing the WhatsApp reply.
+    subscriber_id: Number.isFinite(numericSubscriberId) ? numericSubscriberId : subscriberId,
     data: {
       version: "v2",
       content: {
@@ -39,8 +42,12 @@ export async function sendWhatsAppText(
         messages: [{ type: "text", text: text.trim() }],
       },
     },
-    message_tag: opts?.messageTag ?? "ACCOUNT_UPDATE",
   };
+
+  // Do NOT send a default message_tag. ManyChat currently rejects it with:
+  // "Message tags are no longer supported for Facebook Messenger." WhatsApp
+  // in-window replies succeed without it; only include one if explicitly set.
+  if (opts?.messageTag) body.message_tag = opts.messageTag;
 
   try {
     const resp = await fetch(ENDPOINT, {

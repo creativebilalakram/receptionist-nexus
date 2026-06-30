@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import type { Json } from "@/integrations/supabase/types";
-import { runAfterResponse } from "@/lib/cf-context";
 import { sendWhatsAppText } from "@/lib/manychat-send.server";
 
 type SupabaseAdmin = Awaited<ReturnType<typeof loadAdmin>>;
@@ -205,19 +204,20 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           return ackStop();
         }
 
-        // Schedule heavy work; ManyChat gets an instant empty ack so its 10s
-        // timeout never fires. Real reply is pushed via ManyChat Send API.
-        runAfterResponse(
-          processAndSend(supabaseAdmin, client as ClientRow & { id: string }, data, existing ?? null).catch(async (err) => {
-            console.error("[manychat-webhook] processAndSend failed:", err);
-            await supabaseAdmin.from("webhook_logs").insert({
-              client_id: client.id, direction: "outbound",
-              payload: { error: "processAndSend_threw" } as unknown as Json,
-              response: { message: err instanceof Error ? err.message : String(err) } as Json,
-              status_code: 500,
-            });
-          }),
-        );
+        // IMPORTANT: Do the Send API push in-request. The previous fire-and-forget
+        // path could be killed by the production runtime after the 200 ack, leaving
+        // an inbound log but no outbound WhatsApp message.
+        try {
+          await processAndSend(supabaseAdmin, client as ClientRow & { id: string }, data, existing ?? null);
+        } catch (err) {
+          console.error("[manychat-webhook] processAndSend failed:", err);
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id, direction: "outbound",
+            payload: { error: "processAndSend_threw" } as unknown as Json,
+            response: { message: err instanceof Error ? err.message : String(err) } as Json,
+            status_code: 500,
+          });
+        }
 
         return ackEmpty();
       },
