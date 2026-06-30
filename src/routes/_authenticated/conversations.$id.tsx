@@ -59,14 +59,16 @@ function ConversationDetail() {
 
       <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* Chat */}
-        <div className="rounded-xl border border-border bg-card">
-          <div className="flex items-center justify-between border-b border-border px-6 py-4">
-            <div>
-              <h1 className="text-base font-semibold">{conv.first_name ?? conv.phone ?? conv.subscriber_id}</h1>
-              <p className="font-mono text-[10px] text-muted-foreground">{conv.phone ?? "no phone"} · {conv.subscriber_id}</p>
+        <div className="space-y-4">
+          <StageTracker current={(conv.current_stage as string | null) ?? "open"} reasoning={conv.last_reasoning ?? null} />
+          <div className="rounded-xl border border-border bg-card">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <div>
+                <h1 className="text-base font-semibold">{conv.first_name ?? conv.phone ?? conv.subscriber_id}</h1>
+                <p className="font-mono text-[10px] text-muted-foreground">{conv.phone ?? "no phone"} · {conv.subscriber_id}</p>
+              </div>
+              <StatusPill status={conv.status} />
             </div>
-            <StatusPill status={conv.status} />
-          </div>
           <div className="max-h-[60vh] space-y-3 overflow-y-auto px-6 py-6">
             {messages.length === 0 ? (
               <p className="py-12 text-center text-sm text-muted-foreground">No messages yet.</p>
