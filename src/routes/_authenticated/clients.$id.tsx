@@ -28,6 +28,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { BookingTab } from "@/components/BookingTab";
 
 const clientOpts = (id: string) => queryOptions({ queryKey: ["client", id], queryFn: () => getClient({ data: { id } }) });
 const convsOpts = (id: string) => queryOptions({ queryKey: ["client", id, "convs"], queryFn: () => listConversationsForClient({ data: { client_id: id } }) });
@@ -60,6 +61,7 @@ function ClientDetail() {
       <Tabs defaultValue="setup" className="mt-8">
         <TabsList>
           <TabsTrigger value="setup">Setup</TabsTrigger>
+          <TabsTrigger value="booking">Booking</TabsTrigger>
           <TabsTrigger value="conversations">Conversations</TabsTrigger>
           <TabsTrigger value="appointments">Appointments</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
@@ -69,6 +71,10 @@ function ClientDetail() {
           <SetupForm client={client} />
           <WebhookCard clientId={client.id} secret={client.webhook_secret} />
           <DangerZone clientId={client.id} isActive={client.is_active} />
+        </TabsContent>
+
+        <TabsContent value="booking" className="mt-6">
+          <BookingTab clientId={client.id} />
         </TabsContent>
 
         <TabsContent value="conversations" className="mt-6">
