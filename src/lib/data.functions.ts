@@ -66,7 +66,7 @@ export const listConversationsForClient = createServerFn({ method: "GET" })
   .handler(async ({ data, context }) => {
     const { data: rows, error } = await context.supabase
       .from("conversations")
-      .select("id, subscriber_id, first_name, phone, status, lead_score, last_message_at, created_at")
+      .select("id, subscriber_id, first_name, phone, status, lead_score, last_message_at, created_at, escalated, escalation_reason")
       .eq("client_id", data.client_id)
       .order("last_message_at", { ascending: false });
     if (error) throw new Error(error.message);
@@ -90,12 +90,26 @@ export const updateConversationStatus = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => z.object({
     id: z.string().uuid(),
-    status: z.enum(["active", "qualified", "booked", "lost", "idle"]).optional(),
+    status: z.enum(["active", "qualified", "booked", "lost", "idle", "escalated"]).optional(),
     manual_takeover: z.boolean().optional(),
   }).parse(input))
   .handler(async ({ data, context }) => {
     const { id, ...patch } = data;
     const { error } = await context.supabase.from("conversations").update(patch).eq("id", id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+export const resumeAI = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
+  .handler(async ({ data, context }) => {
+    const { error } = await context.supabase.from("conversations").update({
+      escalated: false,
+      escalation_reason: null,
+      escalated_at: null,
+      status: "active",
+    }).eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
   });

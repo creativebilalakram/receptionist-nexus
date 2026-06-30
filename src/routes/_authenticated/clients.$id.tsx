@@ -310,27 +310,57 @@ function DangerZone({ clientId, isActive }: { clientId: string; isActive: boolea
 
 function ConvosTab({ clientId }: { clientId: string }) {
   const { data } = useSuspenseQuery(convsOpts(clientId));
+  const [filter, setFilter] = useState<"all" | "escalated">("all");
   if (data.length === 0) return <Empty title="No conversations yet" body="Once your ManyChat flow posts to the webhook, threads land here." />;
+  const escalatedCount = data.filter((c) => c.escalated).length;
+  const filtered = filter === "escalated" ? data.filter((c) => c.escalated) : data;
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-card">
-      <ul className="divide-y divide-border">
-        {data.map((c) => (
-          <li key={c.id} className="flex items-center justify-between gap-4 px-6 py-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-sm font-medium">{c.first_name ?? c.phone ?? c.subscriber_id}</span>
-                <span className="text-xs text-muted-foreground">·</span>
-                <span className="font-mono text-[10px] text-muted-foreground">score {c.lead_score}</span>
-              </div>
-              <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{relativeTime(c.last_message_at)}</div>
-            </div>
-            <StatusPill status={c.status} />
-            <Link to="/conversations/$id" params={{ id: c.id }} className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
-              <ArrowUpRight className="h-4 w-4" />
-            </Link>
-          </li>
-        ))}
-      </ul>
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setFilter("all")}
+          className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${filter === "all" ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground"}`}
+        >
+          All ({data.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setFilter("escalated")}
+          className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${filter === "escalated" ? "border-amber-500 bg-amber-500/15 text-amber-500" : "border-border bg-card text-muted-foreground hover:text-foreground"}`}
+        >
+          Escalated ({escalatedCount})
+        </button>
+      </div>
+      {filtered.length === 0 ? (
+        <Empty title="Nothing here" body="No escalated conversations right now." />
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <ul className="divide-y divide-border">
+            {filtered.map((c) => (
+              <li key={c.id} className="flex items-center justify-between gap-4 px-6 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium">{c.first_name ?? c.phone ?? c.subscriber_id}</span>
+                    <span className="text-xs text-muted-foreground">·</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">score {c.lead_score}</span>
+                  </div>
+                  <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{relativeTime(c.last_message_at)}</div>
+                </div>
+                {c.escalated && (
+                  <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-500">
+                    Escalated
+                  </span>
+                )}
+                <StatusPill status={c.status} />
+                <Link to="/conversations/$id" params={{ id: c.id }} className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+                  <ArrowUpRight className="h-4 w-4" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

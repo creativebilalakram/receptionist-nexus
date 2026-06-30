@@ -3,8 +3,8 @@ import { useSuspenseQuery, queryOptions, useQueryClient } from "@tanstack/react-
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, Check, X, CircleDashed, CalendarPlus } from "lucide-react";
-import { getConversation, updateConversationStatus, createAppointment } from "@/lib/data.functions";
+import { ArrowLeft, Check, X, CircleDashed, CalendarPlus, AlertTriangle, PlayCircle } from "lucide-react";
+import { getConversation, updateConversationStatus, createAppointment, resumeAI } from "@/lib/data.functions";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -34,6 +34,7 @@ function ConversationDetail() {
   const { data: conv } = useSuspenseQuery(convOpts(id));
   const queryClient = useQueryClient();
   const updateStatus = useServerFn(updateConversationStatus);
+  const resume = useServerFn(resumeAI);
 
   const messages: Msg[] = Array.isArray(conv.messages) ? (conv.messages as unknown as Msg[]) : [];
   const qual = (conv.qualification ?? {}) as Qualification;
@@ -67,7 +68,14 @@ function ConversationDetail() {
                 <h1 className="text-base font-semibold">{conv.first_name ?? conv.phone ?? conv.subscriber_id}</h1>
                 <p className="font-mono text-[10px] text-muted-foreground">{conv.phone ?? "no phone"} · {conv.subscriber_id}</p>
               </div>
-              <StatusPill status={conv.status} />
+              <div className="flex items-center gap-2">
+                {conv.escalated && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-xs font-medium capitalize text-amber-500">
+                    <AlertTriangle className="h-3 w-3" /> Escalated
+                  </span>
+                )}
+                <StatusPill status={conv.status} />
+              </div>
             </div>
           <div className="max-h-[60vh] space-y-3 overflow-y-auto px-6 py-6">
             {messages.length === 0 ? (
@@ -102,6 +110,34 @@ function ConversationDetail() {
               <BantRow label="Timing" value={qual.timing} />
             </div>
           </div>
+
+          {conv.escalated && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-5 space-y-3">
+              <div className="flex items-center gap-2 text-amber-500">
+                <AlertTriangle className="h-4 w-4" />
+                <h2 className="text-sm font-semibold">Escalated to human</h2>
+              </div>
+              {conv.escalation_reason && (
+                <p className="text-xs text-foreground/90">{conv.escalation_reason}</p>
+              )}
+              {conv.escalated_at && (
+                <p className="font-mono text-[10px] text-muted-foreground">{formatDateTime(conv.escalated_at)}</p>
+              )}
+              <p className="text-xs text-muted-foreground">AI replies are paused. Incoming messages are still logged here for you.</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full justify-start"
+                onClick={async () => {
+                  await resume({ data: { id } });
+                  queryClient.invalidateQueries({ queryKey: ["conversation", id] });
+                  toast.success("AI resumed");
+                }}
+              >
+                <PlayCircle className="mr-1.5 h-3.5 w-3.5" /> Resume AI
+              </Button>
+            </div>
+          )}
 
           <div className="rounded-xl border border-border bg-card p-5">
             <div className="flex items-center justify-between">
