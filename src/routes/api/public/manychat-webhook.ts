@@ -250,6 +250,58 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           status = "escalated";
         }
 
+        // ---- BOOKING TOOL LOOP ----
+        // If AI requested a booking action, execute it and ask the model to draft a final reply.
+        const action = parsedAI?.booking_action;
+        let bookedAppointmentId: string | null = null;
+        if (!shouldEscalate && action && action.type !== "none") {
+          const { loadAvailabilityContext, generateSlots, bookAppointment, formatSlotLabel } =
+            await import("@/lib/booking-core.server");
+
+          if (action.type === "get_slots") {
+            const from = action.from_iso ? new Date(action.from_iso) : new Date();
+            const days = Math.min(Math.max(action.days ?? 7, 1), 14);
+            const to = new Date(from.getTime() + days * 24 * 60 * 60_000);
+            const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
+            if (!("error" in ctx)) {
+              const slots = generateSlots(ctx, from, to, 6);
+              const slotsText = slots.length
+                ? slots.map((s, i) => `${i + 1}. ${s.label} (${s.start})`).join("\n")
+                : "No open slots in that window.";
+              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+                tool: "get_slots",
+                result: slotsText,
+                timezone: ctx.timezone,
+              }) ?? aiReply;
+            }
+          } else if (action.type === "book") {
+            const result = await bookAppointment(supabaseAdmin, {
+              clientId: client.id,
+              meetingTypeId: null,
+              startIso: action.start_iso,
+              contactName: action.contact_name ?? data.first_name ?? null,
+              contactPhone: data.phone ?? null,
+              contactEmail: action.contact_email ?? null,
+              conversationId: convoId ?? null,
+              notes: action.notes ?? null,
+              bookedVia: "ai",
+            });
+            if (result.ok) {
+              bookedAppointmentId = result.appointmentId;
+              status = "booked";
+              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+                tool: "book",
+                result: `Booked successfully for ${result.label}.`,
+              }) ?? `Booked for *${result.label}*. See you then.`;
+            } else {
+              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+                tool: "book",
+                result: `Could not book: ${result.error}. Offer alternative slots.`,
+              }) ?? aiReply;
+            }
+          }
+        }
+
         messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
 
         await supabaseAdmin.from("conversations").update({
