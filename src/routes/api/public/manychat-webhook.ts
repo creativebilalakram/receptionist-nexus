@@ -171,17 +171,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           return ackStop();
         }
 
-        // TEMP allowlist
-        const ALLOWED_PHONES = ["3447306520", "3260660523"];
-        const normalized = (data.phone ?? "").replace(/\D/g, "");
-
-        const last10 = normalized.slice(-10);
-        if (!ALLOWED_PHONES.includes(last10)) {
-          await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200, error: "phone_not_allowlisted",
-          });
-          return ackStop();
-        }
+        // Allowlist removed — accept all phone numbers
 
         await supabaseAdmin.from("webhook_logs").insert({
           client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200,
