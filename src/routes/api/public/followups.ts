@@ -16,22 +16,29 @@ export const Route = createFileRoute("/api/public/followups")({
         }
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-        const now = Date.now();
-        const oneHourAgo = new Date(now - 60 * 60_000).toISOString();
-        const oneDayAgo = new Date(now - 24 * 60 * 60_000).toISOString();
+        const url = new URL(request.url);
+        const windowHours = Math.max(1, Math.min(168, Number(url.searchParams.get("window_hours")) || 24));
+        const minIdleMin = Math.max(5, Number(url.searchParams.get("min_idle_minutes")) || 60);
+        const force = url.searchParams.get("force") === "1" || url.searchParams.get("force") === "true";
+        const onlyPhone = url.searchParams.get("phone");
 
-        // Candidates: silent for 1h–24h, not booked/lost/escalated, no follow-up yet,
-        // showed some interest (lead_score > 0 OR reached qualify+ stage).
-        const { data: candidates, error } = await supabaseAdmin
+        const now = Date.now();
+        const idleSince = new Date(now - minIdleMin * 60_000).toISOString();
+        const windowStart = new Date(now - windowHours * 60 * 60_000).toISOString();
+
+        let q = supabaseAdmin
           .from("conversations")
           .select("id, client_id, subscriber_id, first_name, phone, messages, qualification, lead_score, status, current_stage, last_message_at, manual_takeover, escalated, followup_sent_at")
-          .is("followup_sent_at", null)
           .eq("manual_takeover", false)
           .eq("escalated", false)
-          .not("status", "in", "(booked,lost,qualified)")
-          .lte("last_message_at", oneHourAgo)
-          .gte("last_message_at", oneDayAgo)
-          .limit(50);
+          .not("status", "in", "(booked,lost)")
+          .lte("last_message_at", idleSince)
+          .gte("last_message_at", windowStart)
+          .limit(100);
+        if (!force) q = q.is("followup_sent_at", null);
+        if (onlyPhone) q = q.eq("phone", onlyPhone);
+        const { data: candidates, error } = await q;
+
 
         if (error) {
           return Response.json({ ok: false, error: error.message }, { status: 500 });
