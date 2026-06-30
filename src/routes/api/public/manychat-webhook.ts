@@ -1254,7 +1254,11 @@ REPLY_PARTS RULES:
 - ALWAYS prefer reply_parts over reply for natural human bursts.
 - 1 bubble = simple acknowledgement or single question. 2 bubbles = ack + question, OR statement + question. 3 bubbles = ONLY the premium first-message opener.
 - Each bubble independently follows tone rules (short, *bold* keywords, no dashes, mirrored language).
-- "reply" should still contain the full text (parts joined) as a fallback.`
+- "reply" should still contain the full text (parts joined) as a fallback.
+
+STRICT TOOL NAME RULE:
+- booking_action.type MUST be exactly one of: "none", "check_availability", "book_slot".
+- NEVER invent tool names like "get_slots", "show_slots", "availability", or "confirm_booking".`
   );
 
   return blocks.join("\n\n");
