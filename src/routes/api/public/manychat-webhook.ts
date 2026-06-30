@@ -11,14 +11,26 @@ async function loadAdmin() {
 }
 
 
-const Payload = z.object({
-  client_id: z.string().uuid(),
-  webhook_secret: z.string().min(10).max(200),
-  subscriber_id: z.string().min(1).max(200),
-  phone: z.string().max(40).optional().nullable(),
-  first_name: z.string().max(120).optional().nullable(),
-  message_text: z.string().min(1).max(4000),
-});
+// Accepts ManyChat "Full Contact Data" payload directly.
+// client_id + webhook_secret are passed as URL query params.
+const Payload = z
+  .object({
+    id: z.union([z.string(), z.number()]).optional().nullable(),
+    key: z.string().optional().nullable(),
+    first_name: z.string().max(120).optional().nullable(),
+    last_name: z.string().max(120).optional().nullable(),
+    name: z.string().max(240).optional().nullable(),
+    phone: z.string().max(40).optional().nullable(),
+    whatsapp_phone: z.string().max(40).optional().nullable(),
+    last_input_text: z.string().max(4000).optional().nullable(),
+    // Back-compat: still allow legacy custom-field shape
+    client_id: z.string().uuid().optional(),
+    webhook_secret: z.string().optional(),
+    subscriber_id: z.string().optional(),
+    message_text: z.string().optional(),
+  })
+  .passthrough();
+
 
 const FALLBACK = "Give me one moment, let me check on that for you.";
 
