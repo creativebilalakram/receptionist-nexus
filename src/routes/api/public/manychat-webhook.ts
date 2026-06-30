@@ -427,33 +427,92 @@ async function processAndSend(
         }) ?? aiReply;
       }
     } else if (action.type === "book_slot") {
-      const result = await bookAppointment(supabaseAdmin, {
-        clientId: client.id,
-        meetingTypeId: null,
-        startIso: action.slot_iso_utc,
-        contactName: data.first_name ?? null,
-        contactPhone: data.phone ?? null,
-        contactEmail: action.contact_email ?? null,
-        conversationId: convoId ?? null,
-        notes: null,
-        bookedVia: "ai",
-      });
-      if (result.ok) {
-        status = "booked";
-        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-          tool: "book_slot",
-          result: `Booked successfully for ${result.label}.`,
-        }) ?? `Booked for *${result.label}*. See you then.`;
+      // HARD VALIDATE the AI-proposed slot before touching the DB.
+      // The AI has been known to hallucinate year/date — reject anything
+      // that isn't a valid future ISO within max_advance_days.
+      const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
+      const proposed = new Date(action.slot_iso_utc);
+      const proposedMs = proposed.getTime();
+      const nowMs = Date.now();
+      let validatedIso: string | null = null;
+
+      if ("error" in ctx) {
+        // Settings missing — fail soft.
+      } else if (!Number.isNaN(proposedMs) && proposedMs > nowMs - 5 * 60_000) {
+        // Try to find this exact slot (±1 min) in a freshly generated window
+        // around the proposed time. This catches both stale ISOs and
+        // hallucinated-year ISOs (which fall outside the window entirely).
+        const rs = new Date(proposedMs - 24 * 60 * 60_000);
+        const re = new Date(proposedMs + 24 * 60 * 60_000);
+        const slots = generateSlots(ctx, rs, re, 200);
+        const hit = slots.find(
+          (s) => Math.abs(new Date(s.start).getTime() - proposedMs) < 60_000,
+        );
+        if (hit) validatedIso = hit.start;
+      }
+
+      if (!validatedIso) {
+        // Deterministic failure reply — DO NOT let the AI write this, it
+        // hallucinates "All set!" even when told the booking failed.
+        aiReply = pickBookingFailureText(data.message_text);
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id,
+          direction: "outbound",
+          payload: {
+            kind: "book_slot_validation_failed",
+            proposed_iso: action.slot_iso_utc,
+            reason: !Number.isNaN(proposedMs) && proposedMs <= nowMs - 5 * 60_000 ? "past_or_too_close" : "slot_not_in_availability",
+          } as unknown as Json,
+          status_code: 422,
+        });
       } else {
-        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-          tool: "book_slot",
-          result: `Could not book: ${result.error}. Offer 1-2 nearest alternative slots conversationally.`,
-        }) ?? aiReply;
+        const result = await bookAppointment(supabaseAdmin, {
+          clientId: client.id,
+          meetingTypeId: null,
+          startIso: validatedIso,
+          contactName: data.first_name ?? null,
+          contactPhone: data.phone ?? null,
+          contactEmail: action.contact_email ?? null,
+          conversationId: convoId ?? null,
+          notes: null,
+          bookedVia: "ai",
+        });
+        if (result.ok) {
+          status = "booked";
+          aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+            tool: "book_slot",
+            result: `Booked successfully for ${result.label}.`,
+          }) ?? `Booked for *${result.label}*. See you then.`;
+        } else {
+          // Same deterministic failure path — never trust AI for failure copy.
+          aiReply = pickBookingFailureText(data.message_text);
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id,
+            direction: "outbound",
+            payload: { kind: "book_slot_db_failed", error: result.error, iso: validatedIso } as unknown as Json,
+            status_code: 422,
+          });
+        }
       }
     }
   }
   // Mark that an ack was already pushed so the final send skips re-sending it.
   void ackSent;
+
+  // Dedupe: if the final reply is identical or a substring-prefix match of the
+  // ack we already sent, replace it with a deterministic short follow-up so the
+  // user doesn't see the same bubble twice.
+  if (ackSent) {
+    const lastAck = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant") return messages[i].content;
+      }
+      return "";
+    })();
+    if (lastAck && normalizeForCompare(aiReply) === normalizeForCompare(lastAck)) {
+      aiReply = pickPostAckFiller(data.message_text);
+    }
+  }
 
 
   aiReply = sanitizeReplyText(aiReply);
@@ -617,6 +676,58 @@ function pickAckText(
   return actionType === "book_slot" ? "one sec, *booking* it now…" : "one sec, let me *check*…";
 }
 
+/**
+ * Deterministic, language-aware failure reply for book_slot.
+ * Used when the AI proposes an invalid/past/hallucinated slot OR the DB insert
+ * fails. We never let the AI write this — it has been observed to write
+ * "All set!" even when told the booking failed, which is the worst-case
+ * trust-breaking bug.
+ */
+function pickBookingFailureText(lastUserText: string): string {
+  const t = lastUserText ?? "";
+  if (/[\u0600-\u06FF]/.test(t)) {
+    return "معذرت، یہ سلاٹ ابھی *دستیاب نہیں*۔ کوئی اور وقت بتائیں؟";
+  }
+  if (/[\u0900-\u097F]/.test(t)) {
+    return "माफ़ कीजिए, ये स्लॉट अभी *उपलब्ध नहीं* है। कोई और समय बताएँ?";
+  }
+  if (/[\u0621-\u064A]/.test(t)) {
+    return "عذراً، هذا الموعد غير *متاح* حالياً. أي وقت آخر يناسبك؟";
+  }
+  const lower = t.toLowerCase();
+  const romanHits = ["kya", "ka ", "ko ", " ma ", " ha ", "kar", "mujh", "mera", "kasa", "btao", "thora", "abi", "nahi", "kal", "kab"]
+    .filter((w) => lower.includes(w)).length;
+  if (romanHits >= 2) {
+    return "Sorry, wo slot abhi *available nahi* hai. Koi aur time bata dein?";
+  }
+  return "Sorry, that slot is no longer *available*. What other time works?";
+}
+
+/**
+ * Deterministic short filler used only when the planned final reply is a
+ * duplicate of the ack we already sent. Keeps the conversation moving instead
+ * of repeating the same bubble.
+ */
+function pickPostAckFiller(lastUserText: string): string {
+  const t = lastUserText ?? "";
+  if (/[\u0600-\u06FF]/.test(t)) return "ایک سیکنڈ اور…";
+  if (/[\u0900-\u097F]/.test(t)) return "बस एक पल और…";
+  if (/[\u0621-\u064A]/.test(t)) return "لحظة واحدة فقط…";
+  const lower = t.toLowerCase();
+  const romanHits = ["kya", "ka ", "ko ", " ma ", " ha ", "kar", "nahi", "kal"]
+    .filter((w) => lower.includes(w)).length;
+  if (romanHits >= 2) return "bas ek sec aur…";
+  return "just a sec…";
+}
+
+function normalizeForCompare(s: string): string {
+  return (s ?? "")
+    .toLowerCase()
+    .replace(/\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function safeParseAIJson(content: string): AIResponse | null {
   const tryParse = (s: string): AIResponse | null => {
     try { return JSON.parse(s) as AIResponse; } catch { return null; }
@@ -656,6 +767,23 @@ function sanitizeReplyText(text: string): string {
 
 function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
   const blocks: string[] = [];
+  const tz = client.timezone || "UTC";
+  const now = new Date();
+  const todayLocal = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, weekday: "long", year: "numeric", month: "long", day: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true,
+  }).format(now);
+  const todayYmd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(now);
+
+  // BLOCK 0 — TIME ANCHOR (critical — prevents date drift to training cutoff)
+  blocks.push(
+    `CURRENT TIME ANCHOR (use this — do NOT guess from training data)
+Right now it is: ${todayLocal} (${tz}).
+Today's date is ${todayYmd}.
+When the user says "tomorrow", "kal", "next week", etc., resolve relative to THIS date — never to any other year. ALL slot_iso_utc values you emit MUST be on or after today.`
+  );
 
   // BLOCK 1 — IDENTITY & ROLE
   blocks.push(
