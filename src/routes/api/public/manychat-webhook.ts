@@ -56,7 +56,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const parsed = Payload.safeParse(raw);
         if (!parsed.success) {
           await supabaseAdmin.from("webhook_logs").insert({
-            direction: "inbound", payload: raw as object, status_code: 400,
+            direction: "inbound", payload: raw as Json, status_code: 400,
             error: parsed.error.message,
           });
           return new Response(JSON.stringify({ ai_reply: FALLBACK, error: "invalid_payload" }), { status: 400, headers: cors });
@@ -68,27 +68,27 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           .from("clients").select("*").eq("id", data.client_id).maybeSingle();
         if (clientErr || !client) {
           await supabaseAdmin.from("webhook_logs").insert({
-            direction: "inbound", payload: data, status_code: 404, error: "client_not_found",
+            direction: "inbound", payload: data as unknown as Json, status_code: 404, error: "client_not_found",
           });
           return new Response(JSON.stringify({ ai_reply: FALLBACK, error: "client_not_found" }), { status: 404, headers: cors });
         }
 
         if (client.webhook_secret !== data.webhook_secret) {
           await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id, direction: "inbound", payload: data, status_code: 401, error: "invalid_secret",
+            client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 401, error: "invalid_secret",
           });
           return new Response(JSON.stringify({ ai_reply: FALLBACK, error: "unauthorized" }), { status: 401, headers: cors });
         }
 
         if (!client.is_active) {
           await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id, direction: "inbound", payload: data, status_code: 200, error: "client_paused",
+            client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200, error: "client_paused",
           });
           return new Response(JSON.stringify({ ai_reply: "We're temporarily unavailable. We'll be back shortly." }), { headers: cors });
         }
 
         await supabaseAdmin.from("webhook_logs").insert({
-          client_id: client.id, direction: "inbound", payload: data, status_code: 200,
+          client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200,
         });
 
         // Upsert conversation
@@ -207,8 +207,8 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         await supabaseAdmin.from("webhook_logs").insert({
           client_id: client.id,
           direction: "outbound",
-          payload: { reply: aiReply, parsed: parsedAI },
-          response: aiResponseLog as object,
+          payload: { reply: aiReply, parsed: parsedAI } as unknown as Json,
+          response: aiResponseLog as Json,
           status_code: aiStatusCode || 200,
         });
 
