@@ -237,12 +237,22 @@ async function fetchExistingConv(
   return data;
 }
 
+type NormalizedPayload = {
+  client_id: string;
+  webhook_secret: string;
+  subscriber_id: string;
+  phone: string | null;
+  first_name: string | null;
+  message_text: string;
+};
+
 async function processAndSend(
   supabaseAdmin: SupabaseAdmin,
   client: ClientRow & { id: string },
-  data: z.infer<typeof Payload>,
+  data: NormalizedPayload,
   existing: ConvRow | null,
 ): Promise<void> {
+
   const nowIso = new Date().toISOString();
   const messages: Msg[] = Array.isArray(existing?.messages) ? (existing!.messages as unknown as Msg[]) : [];
   const priorMessageCount = messages.length;
