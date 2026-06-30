@@ -101,15 +101,21 @@ export async function loadAvailabilityContext(
   ]);
 
   const meetingType = mtRes.data;
+  const settings = setRes.data;
+  const autoBuf = settings.auto_buffer_after_minutes ?? 15;
   const busy = (apptsRes.data ?? []).map((a) => {
     const start = new Date(a.scheduled_at);
+    if (a.effective_end_at) {
+      return { start, end: new Date(a.effective_end_at) };
+    }
     const dur = a.duration_minutes ?? meetingType.duration_minutes;
-    return { start, end: addMinutes(start, dur) };
+    // Fallback: duration + meeting after-buffer + global auto-buffer
+    return { start, end: addMinutes(start, dur + (meetingType.buffer_after_minutes ?? 0) + autoBuf) };
   });
 
   return {
     meetingType,
-    settings: setRes.data,
+    settings,
     timezone,
     rules: rulesRes.data ?? [],
     blocks: blocksRes.data ?? [],
