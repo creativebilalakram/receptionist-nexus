@@ -35,16 +35,19 @@ const FALLBACK = "Give me one moment, let me check on that for you.";
 
 type Stage = "open" | "discover" | "qualify" | "position" | "invite" | "objection" | "close" | "park";
 
-type BookingAction =
+type CheckAvailabilityAction =
   | {
       type: "check_availability";
       user_stated_time?: string;
       preferred_date_label?: string;
       preferred_time_window?: "morning" | "afternoon" | "evening" | "specific_time" | "any" | string;
       specific_time_local?: string | null;
-    }
-  | { type: "book_slot"; slot_iso_utc: string; contact_email?: string | null }
-  | { type: "none" };
+    };
+
+type BookSlotAction = { type: "book_slot"; slot_iso_utc: string; contact_email?: string | null };
+type NoBookingAction = { type: "none" };
+type NormalizedBookingAction = CheckAvailabilityAction | BookSlotAction | NoBookingAction;
+type BookingAction = NormalizedBookingAction | ({ type: string } & Record<string, unknown>);
 
 type AIResponse = {
   reply: string;
@@ -342,7 +345,8 @@ async function processAndSend(
   // "let me check..." ack bubble first so the user sees activity, then
   // continue with the real work and send the final answer as bubble #2.
   let ackSent = false;
-  const action = parsedAI?.booking_action;
+  const action = normalizeBookingAction(parsedAI?.booking_action, parsedAI, messages, data.message_text);
+  let toolFinalReply = false;
   if (!shouldEscalate && action && action.type !== "none") {
     const ackText = pickAckText(parsedAI?.reply, data.message_text, action.type);
     if (ackText) {
@@ -402,20 +406,28 @@ async function processAndSend(
           .slice(0, 2)
           .map((x) => ({ start: x.s.start, label: x.s.label }));
 
-        const summary = JSON.stringify({
+        const availability = {
           user_stated_time: action.user_stated_time ?? null,
           timezone: tz,
           exact_available: !!exactSlot,
           exact_slot: exactSlot,
           alternatives,
           window_empty: pool.length === 0,
-        });
+        };
 
-        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-          tool: "check_availability",
-          result: summary,
-          timezone: tz,
-        }) ?? aiReply;
+        // Production reliability: do not wait on a second AI call for slot copy.
+        // The backend already knows the truth; compose the final useful reply deterministically.
+        aiReply = composeAvailabilityReply(availability, data.message_text);
+        toolFinalReply = true;
+      } else {
+        aiReply = pickAvailabilityFailureText(data.message_text);
+        toolFinalReply = true;
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id,
+          direction: "outbound",
+          payload: { kind: "availability_context_failed", error: ctx.error } as unknown as Json,
+          status_code: 422,
+        });
       }
     } else if (action.type === "book_slot") {
       // HARD VALIDATE the AI-proposed slot before touching the DB.
@@ -442,6 +454,22 @@ async function processAndSend(
         if (hit) validatedIso = hit.start;
       }
 
+      if (!validatedIso && !("error" in ctx)) {
+        validatedIso = resolveSlotFromConversation(ctx, messages, data.message_text, generateSlots);
+        if (validatedIso) {
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id,
+            direction: "outbound",
+            payload: {
+              kind: "book_slot_recovered_from_text",
+              proposed_iso: action.slot_iso_utc,
+              recovered_iso: validatedIso,
+            } as unknown as Json,
+            status_code: 200,
+          });
+        }
+      }
+
       if (!validatedIso) {
         // Deterministic failure reply — DO NOT let the AI write this, it
         // hallucinates "All set!" even when told the booking failed.
@@ -456,6 +484,7 @@ async function processAndSend(
           } as unknown as Json,
           status_code: 422,
         });
+        toolFinalReply = true;
       } else {
         const result = await bookAppointment(supabaseAdmin, {
           clientId: client.id,
@@ -470,10 +499,8 @@ async function processAndSend(
         });
         if (result.ok) {
           status = "booked";
-          aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-            tool: "book_slot",
-            result: `Booked successfully for ${result.label}.`,
-          }) ?? `Booked for *${result.label}*. See you then.`;
+          aiReply = composeBookingSuccessReply(result.label, data.message_text, action.contact_email ?? null);
+          toolFinalReply = true;
         } else {
           // Same deterministic failure path — never trust AI for failure copy.
           aiReply = pickBookingFailureText(data.message_text);
@@ -483,6 +510,7 @@ async function processAndSend(
             payload: { kind: "book_slot_db_failed", error: result.error, iso: validatedIso } as unknown as Json,
             status_code: 422,
           });
+          toolFinalReply = true;
         }
       }
     }
@@ -510,7 +538,7 @@ async function processAndSend(
 
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
   let parts: string[] = [];
-  const modelParts = Array.isArray(parsedAI?.reply_parts)
+  const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
     ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
     : [];
   if (modelParts.length > 0) {
@@ -596,6 +624,236 @@ function autoSplitReply(text: string): string[] {
   const b = t.slice(cut).trim();
   if (!a || !b) return [t];
   return [a, b];
+}
+
+type AvailabilitySummary = {
+  user_stated_time: string | null;
+  timezone: string;
+  exact_available: boolean;
+  exact_slot: { start: string; label: string } | null;
+  alternatives: Array<{ start: string; label: string }>;
+  window_empty: boolean;
+};
+
+function normalizeBookingAction(
+  action: BookingAction | undefined,
+  ai: AIResponse | null,
+  messages: Msg[],
+  lastUserText: string,
+): NormalizedBookingAction | undefined {
+  if (!action) {
+    return ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)
+      ? buildCheckAvailabilityAction({}, messages, lastUserText)
+      : undefined;
+  }
+
+  if (action.type === "none") return { type: "none" };
+  if (action.type === "check_availability") {
+    return {
+      type: "check_availability",
+      user_stated_time: typeof action.user_stated_time === "string" ? action.user_stated_time : lastUserText,
+      preferred_date_label: typeof action.preferred_date_label === "string" ? action.preferred_date_label : undefined,
+      preferred_time_window: typeof action.preferred_time_window === "string" ? action.preferred_time_window : "any",
+      specific_time_local: typeof action.specific_time_local === "string" ? action.specific_time_local : null,
+    };
+  }
+  if (action.type === "book_slot") {
+    return typeof action.slot_iso_utc === "string" && action.slot_iso_utc.trim()
+      ? { type: "book_slot", slot_iso_utc: action.slot_iso_utc, contact_email: typeof action.contact_email === "string" ? action.contact_email : null }
+      : { type: "none" };
+  }
+
+  // Backward compatibility for older / provider-invented tool names.
+  // This was the root cause of the stuck screenshot: OpenAI returned
+  // { type: "get_slots" }, so the code sent only a holding bubble and never
+  // executed availability lookup.
+  if (["get_slots", "show_slots", "list_slots", "availability", "get_availability"].includes(action.type)) {
+    return buildCheckAvailabilityAction(action, messages, lastUserText);
+  }
+
+  if (ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)) {
+    return buildCheckAvailabilityAction(action, messages, lastUserText);
+  }
+
+  return { type: "none" };
+}
+
+function buildCheckAvailabilityAction(
+  raw: Record<string, unknown>,
+  messages: Msg[],
+  lastUserText: string,
+): CheckAvailabilityAction {
+  const specific = parseSpecificTimeLocal(lastUserText) ?? null;
+  return {
+    type: "check_availability",
+    user_stated_time: lastUserText,
+    preferred_date_label: inferPreferredDateLabel(raw, messages, lastUserText) ?? undefined,
+    preferred_time_window: inferTimeWindow(lastUserText, specific),
+    specific_time_local: specific,
+  };
+}
+
+function looksLikeAvailabilityAsk(text: string): boolean {
+  const t = text.toLowerCase();
+  return /\b(avb|avail|available|availability|slot|slots|time|timing|when|kab|konsa|dikhao|show)\b/.test(t);
+}
+
+function inferPreferredDateLabel(
+  raw: Record<string, unknown>,
+  messages: Msg[],
+  lastUserText: string,
+): string | null {
+  if (typeof raw.preferred_date_label === "string" && raw.preferred_date_label.trim()) {
+    return raw.preferred_date_label.trim();
+  }
+  if (raw.days === 0 || raw.day_offset === 0) return "today";
+  if (raw.days === 1 || raw.day_offset === 1) return "tomorrow";
+
+  const recent = [...messages.slice(-8).map((m) => m.content), lastUserText].join(" \n ").toLowerCase();
+  if (/\b(tomorrow|tmrw|kal)\b/.test(recent)) return "tomorrow";
+  if (/\b(today|aaj)\b/.test(recent)) return "today";
+  const weekday = recent.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (weekday) return weekday[1];
+  const iso = recent.match(/\b\d{4}-\d{2}-\d{2}\b/);
+  return iso?.[0] ?? null;
+}
+
+function inferTimeWindow(text: string, specific: string | null): CheckAvailabilityAction["preferred_time_window"] {
+  const t = text.toLowerCase();
+  if (specific) return "specific_time";
+  if (/\b(morning|subah)\b/.test(t)) return "morning";
+  if (/\b(afternoon|dopahar|dupehar)\b/.test(t)) return "afternoon";
+  if (/\b(evening|shaam|sham|raat|night)\b/.test(t)) return "evening";
+  return "any";
+}
+
+function parseSpecificTimeLocal(text: string): string | null {
+  const t = text.toLowerCase();
+  const withMinutes = t.match(/\b(1[0-2]|0?[1-9]|2[0-3])[:.]([0-5]\d)\s*(am|pm)?\b/);
+  if (withMinutes) {
+    let h = parseInt(withMinutes[1], 10);
+    const m = parseInt(withMinutes[2], 10);
+    const mer = withMinutes[3];
+    if (mer === "pm" && h < 12) h += 12;
+    if (mer === "am" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+
+  const hourOnly = t.match(/\b(1[0-2]|0?[1-9])\s*(am|pm)\b/);
+  if (hourOnly) {
+    let h = parseInt(hourOnly[1], 10);
+    const mer = hourOnly[2];
+    if (mer === "pm" && h < 12) h += 12;
+    if (mer === "am" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:00`;
+  }
+
+  return null;
+}
+
+function composeAvailabilityReply(summary: AvailabilitySummary, lastUserText: string): string {
+  if (summary.exact_available && summary.exact_slot) {
+    return localizedText(lastUserText, {
+      roman: `Haan, *${summary.exact_slot.label}* available hai. Lock kar dun?`,
+      english: `Yes, *${summary.exact_slot.label}* is available. Should I lock it in?`,
+      urdu: `جی، *${summary.exact_slot.label}* دستیاب ہے۔ بُک کر دوں؟`,
+      hindi: `हाँ, *${summary.exact_slot.label}* available है। बुक कर दूँ?`,
+      arabic: `نعم، *${summary.exact_slot.label}* متاح. أحجزه لك؟`,
+    });
+  }
+
+  if (summary.alternatives.length > 0) {
+    const times = summary.alternatives.map((s) => `*${s.label}*`).join(" or ");
+    return localizedText(lastUserText, {
+      roman: `${summary.user_stated_time ? "Wo exact time available nahi." : "Available slots ye hain."} ${times} ${summary.timezone} work karega?`,
+      english: `${summary.user_stated_time ? "That exact time is taken." : "Available slots:"} ${times} ${summary.timezone}. Which works?`,
+      urdu: `وہ exact time دستیاب نہیں۔ ${times} ${summary.timezone} میں سے کون سا ٹھیک ہے؟`,
+      hindi: `वो exact time available नहीं है। ${times} ${summary.timezone} में कौन सा ठीक रहेगा?`,
+      arabic: `ذلك الوقت غير متاح. ${times} ${summary.timezone} أيهما يناسبك؟`,
+    });
+  }
+
+  return pickAvailabilityFailureText(lastUserText);
+}
+
+function composeBookingSuccessReply(label: string, lastUserText: string, email: string | null): string {
+  if (email) {
+    return localizedText(lastUserText, {
+      roman: `Done, demo *${label}* par book ho gayi. Calendar invite email par aa jayega.`,
+      english: `Done, your demo is booked for *${label}*. The calendar invite will hit your email shortly.`,
+      urdu: `Done، آپ کا demo *${label}* پر book ہو گیا۔ Calendar invite email پر آ جائے گا۔`,
+      hindi: `Done, आपका demo *${label}* पर book हो गया। Calendar invite email पर आ जाएगा।`,
+      arabic: `تم، حجزت العرض في *${label}*. ستصلك دعوة التقويم على البريد قريباً.`,
+    });
+  }
+  return localizedText(lastUserText, {
+    roman: `Done, demo *${label}* par book ho gayi. Email bhej dein, calendar invite bhi send kar deta hun.`,
+    english: `Done, your demo is booked for *${label}*. Send your email so I can send a calendar invite too.`,
+    urdu: `Done، demo *${label}* پر book ہو گیا۔ Email bhej dein, calendar invite bhi send kar deta hun.`,
+    hindi: `Done, demo *${label}* पर book हो गया। Email भेज दें, calendar invite भी भेज दूँगा.`,
+    arabic: `تم، حجزت العرض في *${label}*. أرسل بريدك لأرسل دعوة التقويم أيضاً.`,
+  });
+}
+
+function pickAvailabilityFailureText(lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: "Abhi matching *slot* nahi mil raha. Koi aur day ya time bata dein?",
+    english: "I’m not seeing a matching *slot* right now. What other day or time works?",
+    urdu: "ابھی matching *slot* نہیں مل رہا۔ کوئی اور دن یا وقت بتائیں؟",
+    hindi: "अभी matching *slot* नहीं मिल रहा। कोई और दिन या समय बताएँ?",
+    arabic: "لا أرى موعداً مناسباً الآن. ما اليوم أو الوقت الآخر الذي يناسبك؟",
+  });
+}
+
+function resolveSlotFromConversation(
+  ctx: { timezone: string },
+  messages: Msg[],
+  lastUserText: string,
+  generateSlotsFn: (ctx: never, rangeStart: Date, rangeEnd: Date, maxSlots?: number) => Array<{ start: string; label: string }>,
+): string | null {
+  const wanted = inferWantedHour(lastUserText, messages);
+  if (wanted == null) return null;
+
+  const dateLabel = inferPreferredDateLabel({}, messages, lastUserText) ?? "tomorrow";
+  const target = resolveTargetDateTime(dateLabel, null, ctx.timezone);
+  const anchor = target.date ?? new Date();
+  const slots = generateSlotsFn(ctx as never, new Date(anchor.getTime() - 24 * 60 * 60_000), new Date(anchor.getTime() + 6 * 24 * 60 * 60_000), 120);
+  const daySlots = target.localYmd
+    ? slots.filter((s) => localYmdInTz(new Date(s.start), ctx.timezone) === target.localYmd)
+    : slots;
+  const hit = daySlots.find((s) => localHourInTz(new Date(s.start), ctx.timezone) === wanted);
+  return hit?.start ?? null;
+}
+
+function inferWantedHour(lastUserText: string, messages: Msg[]): number | null {
+  const specific = parseSpecificTimeLocal(lastUserText);
+  if (specific) return parseInt(specific.slice(0, 2), 10);
+
+  const n = lastUserText.trim().match(/^([1-9]|1[0-2])$/)?.[1];
+  if (!n) return null;
+  const hour = parseInt(n, 10);
+  const recentAssistant = [...messages].reverse().find((m) => m.role === "assistant")?.content.toLowerCase() ?? "";
+  const offeredPm = new RegExp(`\\b${hour}(?::00)?\\s*pm\\b`).test(recentAssistant);
+  const offeredAm = new RegExp(`\\b${hour}(?::00)?\\s*am\\b`).test(recentAssistant);
+  if (offeredPm && hour < 12) return hour + 12;
+  if (offeredAm) return hour === 12 ? 0 : hour;
+  return hour >= 8 ? hour : hour + 12;
+}
+
+function localizedText(
+  text: string,
+  variants: { roman: string; english: string; urdu: string; hindi: string; arabic: string },
+): string {
+  const t = text.toLowerCase();
+  if (/[\u0600-\u06FF]/.test(text)) return variants.urdu;
+  if (/[\u0900-\u097F]/.test(text)) return variants.hindi;
+  if (/\b(arabic|عربي)\b/.test(t)) return variants.arabic;
+
+  const romanHits = [
+    "kya", "ka ", "ko ", " ma ", " ha", "hai", "kar", "mujh", "mera",
+    "kasa", "btao", "thora", "abi", "nahi", "kal", "yar", "acha", "karo",
+  ].filter((w) => t.includes(w)).length;
+  return romanHits >= 2 ? variants.roman : variants.english;
 }
 
 
@@ -995,7 +1253,11 @@ REPLY_PARTS RULES:
 - ALWAYS prefer reply_parts over reply for natural human bursts.
 - 1 bubble = simple acknowledgement or single question. 2 bubbles = ack + question, OR statement + question. 3 bubbles = ONLY the premium first-message opener.
 - Each bubble independently follows tone rules (short, *bold* keywords, no dashes, mirrored language).
-- "reply" should still contain the full text (parts joined) as a fallback.`
+- "reply" should still contain the full text (parts joined) as a fallback.
+
+STRICT TOOL NAME RULE:
+- booking_action.type MUST be exactly one of: "none", "check_availability", "book_slot".
+- NEVER invent tool names like "get_slots", "show_slots", "availability", or "confirm_booking".`
   );
 
   return blocks.join("\n\n");
