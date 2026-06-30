@@ -118,7 +118,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           await supabaseAdmin.from("webhook_logs").insert({
             client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200, error: "phone_not_allowlisted",
           });
-          return new Response(JSON.stringify({ ai_reply: "" }), { headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "STOP" }), { headers: cors });
         }
 
         const nowIso = new Date().toISOString();
