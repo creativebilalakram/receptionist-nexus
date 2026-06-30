@@ -138,10 +138,11 @@ export const listAppointments = createServerFn({ method: "GET" })
       id: string; client_id: string; client_name: string;
       scheduled_at: string; status: string; notes: string | null;
       conversation_id: string | null;
+      duration_minutes: number | null; effective_end_at: string | null;
     }>;
     const { data, error } = await context.supabase
       .from("appointments")
-      .select("id, client_id, scheduled_at, status, notes, conversation_id")
+      .select("id, client_id, scheduled_at, status, notes, conversation_id, duration_minutes, effective_end_at")
       .in("client_id", ids)
       .order("scheduled_at", { ascending: true });
     if (error) throw new Error(error.message);
