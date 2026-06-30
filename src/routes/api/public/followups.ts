@@ -136,6 +136,30 @@ async function generateFollowup(args: {
   const aiKey = process.env.OPENAI_API_KEY;
   if (!aiKey) return null;
   const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+  const transcript = args.messages.slice(-12).map((m) =>
+    `${m.role === "user" ? "USER" : "AI"}: ${m.content}`
+  ).join("\n");
+
+  const system = `You are the WhatsApp receptionist for *${args.client.business_name}*. The lead went silent. Write ONE warm, human, personalized follow-up.
+
+BUSINESS: ${args.client.business_name}${args.client.niche ? ` — ${args.client.niche}` : ""}
+SERVICES: ${args.client.services ?? "(unspecified)"}
+IDEAL CUSTOMER: ${args.client.icp ?? "(unspecified)"}
+TONE: ${args.client.tone_notes ?? "friendly, professional, concise"}
+LEAD NAME: ${args.firstName ?? "(unknown)"}
+STAGE WHEN THEY DROPPED: ${args.stage ?? "open"}
+
+CONVERSATION SO FAR:
+${transcript}
+
+RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings. Reference something specific they said. End with ONE soft question. Output ONLY the message text.`;
+
+  try {
+    const { retryFetch } = await import("@/lib/retry");
+    const resp = await retryFetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "Authorization": `Bearer ${aiKey}` },
       body: JSON.stringify({
         model: aiModel,
         messages: [
