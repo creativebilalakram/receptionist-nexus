@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import type { Json } from "@/integrations/supabase/types";
-import { sendWhatsAppText } from "@/lib/manychat-send.server";
+import { sendWhatsAppText, sendWhatsAppTextParts } from "@/lib/manychat-send.server";
 
 type SupabaseAdmin = Awaited<ReturnType<typeof loadAdmin>>;
 async function loadAdmin() {
