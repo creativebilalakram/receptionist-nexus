@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import type { Json } from "@/integrations/supabase/types";
+import type { AvailabilityContext, Slot } from "@/lib/booking-core.server";
 import { sendWhatsAppText, sendWhatsAppTextParts } from "@/lib/manychat-send.server";
 
 type SupabaseAdmin = Awaited<ReturnType<typeof loadAdmin>>;
@@ -455,7 +456,7 @@ async function processAndSend(
       }
 
       if (!validatedIso && !("error" in ctx)) {
-        validatedIso = resolveSlotFromConversation(ctx, messages, data.message_text);
+        validatedIso = resolveSlotFromConversation(ctx, messages, data.message_text, generateSlots);
         if (validatedIso) {
           await supabaseAdmin.from("webhook_logs").insert({
             client_id: client.id,
