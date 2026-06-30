@@ -127,6 +127,29 @@ export const listClientLogs = createServerFn({ method: "GET" })
     return rows ?? [];
   });
 
+export const listWebhookFailures = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { data: clients } = await context.supabase
+      .from("clients").select("id, business_name").eq("owner_id", context.userId);
+    const ids = (clients ?? []).map((c) => c.id);
+    const nameMap = new Map((clients ?? []).map((c) => [c.id, c.business_name]));
+    if (ids.length === 0) return [] as Array<{
+      id: string; client_id: string; client_name: string;
+      direction: string; status_code: number | null; error: string | null;
+      payload: unknown; response: unknown; created_at: string;
+    }>;
+    const { data, error } = await context.supabase
+      .from("webhook_logs")
+      .select("id, client_id, direction, status_code, error, payload, response, created_at")
+      .in("client_id", ids)
+      .or("status_code.gte.400,error.not.is.null")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (error) throw new Error(error.message);
+    return (data ?? []).map((r) => ({ ...r, client_name: nameMap.get(r.client_id) ?? "—" }));
+  });
+
 export const listAppointments = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
