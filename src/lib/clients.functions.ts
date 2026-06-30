@@ -6,6 +6,8 @@ const clientInput = z.object({
   business_name: z.string().trim().min(1).max(120),
   niche: z.string().trim().max(120).optional().nullable(),
   services: z.string().trim().max(4000).optional().nullable(),
+  icp: z.string().trim().max(2000).optional().nullable(),
+  objection_notes: z.string().trim().max(4000).optional().nullable(),
   tone_notes: z.string().trim().max(4000).optional().nullable(),
   faq: z.string().trim().max(8000).optional().nullable(),
   booking_link: z.string().trim().url().max(500).optional().or(z.literal("")).nullable(),

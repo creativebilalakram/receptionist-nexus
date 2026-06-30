@@ -59,14 +59,16 @@ function ConversationDetail() {
 
       <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* Chat */}
-        <div className="rounded-xl border border-border bg-card">
-          <div className="flex items-center justify-between border-b border-border px-6 py-4">
-            <div>
-              <h1 className="text-base font-semibold">{conv.first_name ?? conv.phone ?? conv.subscriber_id}</h1>
-              <p className="font-mono text-[10px] text-muted-foreground">{conv.phone ?? "no phone"} · {conv.subscriber_id}</p>
+        <div className="space-y-4">
+          <StageTracker current={(conv.current_stage as string | null) ?? "open"} reasoning={conv.last_reasoning ?? null} />
+          <div className="rounded-xl border border-border bg-card">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <div>
+                <h1 className="text-base font-semibold">{conv.first_name ?? conv.phone ?? conv.subscriber_id}</h1>
+                <p className="font-mono text-[10px] text-muted-foreground">{conv.phone ?? "no phone"} · {conv.subscriber_id}</p>
+              </div>
+              <StatusPill status={conv.status} />
             </div>
-            <StatusPill status={conv.status} />
-          </div>
           <div className="max-h-[60vh] space-y-3 overflow-y-auto px-6 py-6">
             {messages.length === 0 ? (
               <p className="py-12 text-center text-sm text-muted-foreground">No messages yet.</p>
@@ -84,6 +86,7 @@ function ConversationDetail() {
                 </div>
               </div>
             ))}
+          </div>
           </div>
         </div>
 
@@ -187,3 +190,63 @@ function ScheduleAppointmentButton({ clientId, conversationId }: { clientId: str
     </Dialog>
   );
 }
+
+const STAGES: { key: string; label: string }[] = [
+  { key: "open", label: "Open" },
+  { key: "discover", label: "Discover" },
+  { key: "qualify", label: "Qualify" },
+  { key: "position", label: "Position" },
+  { key: "invite", label: "Invite" },
+  { key: "close", label: "Close" },
+];
+
+function StageTracker({ current, reasoning }: { current: string; reasoning: string | null }) {
+  const [open, setOpen] = useState(false);
+  const activeIdx = STAGES.findIndex((s) => s.key === current);
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-1 flex-wrap items-center gap-1.5">
+          {STAGES.map((s, i) => {
+            const isActive = s.key === current;
+            const isPast = activeIdx > -1 && i < activeIdx;
+            return (
+              <div key={s.key} className="flex items-center gap-1.5">
+                <span
+                  className={`rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider transition-colors ${
+                    isActive
+                      ? "bg-primary text-primary-foreground"
+                      : isPast
+                        ? "bg-muted text-foreground"
+                        : "bg-muted/40 text-muted-foreground"
+                  }`}
+                >
+                  {s.label}
+                </span>
+                {i < STAGES.length - 1 && <span className="text-[10px] text-muted-foreground">→</span>}
+              </div>
+            );
+          })}
+        </div>
+        {(current === "objection" || current === "park") && (
+          <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-amber-500">
+            {current}
+          </span>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="mt-3 text-[10px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground"
+      >
+        {open ? "▼" : "▶"} AI reasoning
+      </button>
+      {open && (
+        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-mono text-[11px] text-muted-foreground">
+          {reasoning ?? "(no reasoning recorded yet)"}
+        </pre>
+      )}
+    </div>
+  );
+}
+

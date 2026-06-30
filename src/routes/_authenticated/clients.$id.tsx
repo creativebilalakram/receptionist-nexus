@@ -95,6 +95,8 @@ function SetupForm({ client }: { client: Awaited<ReturnType<typeof getClient>> }
     business_name: client.business_name,
     niche: client.niche ?? "",
     services: client.services ?? "",
+    icp: client.icp ?? "",
+    objection_notes: client.objection_notes ?? "",
     tone_notes: client.tone_notes ?? "",
     faq: client.faq ?? "",
     booking_link: client.booking_link ?? "",
@@ -126,6 +128,8 @@ function SetupForm({ client }: { client: Awaited<ReturnType<typeof getClient>> }
       </div>
       <div className="mt-5 grid gap-5">
         <Field label="Services"><Textarea rows={3} value={form.services} onChange={(e) => setForm({ ...form, services: e.target.value })} /></Field>
+        <Field label="Ideal customer (ICP)"><Textarea rows={2} placeholder="Who you serve in 1–2 sentences" value={form.icp} onChange={(e) => setForm({ ...form, icp: e.target.value })} /></Field>
+        <Field label="Objection notes"><Textarea rows={4} placeholder="Common objections + how the AI should reframe them" value={form.objection_notes} onChange={(e) => setForm({ ...form, objection_notes: e.target.value })} /></Field>
         <Field label="Tone guidance"><Textarea rows={3} value={form.tone_notes} onChange={(e) => setForm({ ...form, tone_notes: e.target.value })} /></Field>
         <Field label="FAQ"><Textarea rows={4} value={form.faq} onChange={(e) => setForm({ ...form, faq: e.target.value })} /></Field>
         <Field label="Booking link"><Input type="url" placeholder="https://" value={form.booking_link} onChange={(e) => setForm({ ...form, booking_link: e.target.value })} /></Field>
