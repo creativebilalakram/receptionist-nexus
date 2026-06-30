@@ -85,13 +85,18 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           "Access-Control-Allow-Origin": "*",
           "content-type": "application/json",
         } as const;
-        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+        const ackEmpty = () =>
+          new Response(JSON.stringify({ ai_reply: "" }), { headers: cors });
+        const ackStop = () =>
+          new Response(JSON.stringify({ ai_reply: "STOP" }), { headers: cors });
+
+        const supabaseAdmin = await loadAdmin();
 
         let raw: unknown;
         try {
           raw = await request.json();
         } catch {
-          return new Response(JSON.stringify({ ai_reply: FALLBACK, error: "invalid_json" }), { status: 400, headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "", error: "invalid_json" }), { status: 400, headers: cors });
         }
 
         const parsed = Payload.safeParse(raw);
@@ -100,7 +105,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             direction: "inbound", payload: raw as Json, status_code: 400,
             error: parsed.error.message,
           });
-          return new Response(JSON.stringify({ ai_reply: FALLBACK, error: "invalid_payload" }), { status: 400, headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "", error: "invalid_payload" }), { status: 400, headers: cors });
         }
         const data = parsed.data;
 
@@ -110,28 +115,24 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           await supabaseAdmin.from("webhook_logs").insert({
             direction: "inbound", payload: data as unknown as Json, status_code: 404, error: "client_not_found",
           });
-          return new Response(JSON.stringify({ ai_reply: FALLBACK, error: "client_not_found" }), { status: 404, headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "", error: "client_not_found" }), { status: 404, headers: cors });
         }
 
         if (client.webhook_secret !== data.webhook_secret) {
           await supabaseAdmin.from("webhook_logs").insert({
             client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 401, error: "invalid_secret",
           });
-          return new Response(JSON.stringify({ ai_reply: FALLBACK, error: "unauthorized" }), { status: 401, headers: cors });
+          return new Response(JSON.stringify({ ai_reply: "", error: "unauthorized" }), { status: 401, headers: cors });
         }
 
         if (!client.is_active) {
           await supabaseAdmin.from("webhook_logs").insert({
             client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200, error: "client_paused",
           });
-          return new Response(JSON.stringify({ ai_reply: "We're temporarily unavailable. We'll be back shortly." }), { headers: cors });
+          return ackStop();
         }
 
-        await supabaseAdmin.from("webhook_logs").insert({
-          client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200,
-        });
-
-        // TEMP allowlist: only reply to this phone number for now
+        // TEMP allowlist
         const ALLOWED_PHONES = ["3447306520", "3260660523"];
         const normalized = (data.phone ?? "").replace(/\D/g, "");
         const last10 = normalized.slice(-10);
@@ -139,257 +140,283 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           await supabaseAdmin.from("webhook_logs").insert({
             client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200, error: "phone_not_allowlisted",
           });
-          return new Response(JSON.stringify({ ai_reply: "STOP" }), { headers: cors });
+          return ackStop();
         }
 
-        const nowIso = new Date().toISOString();
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id, direction: "inbound", payload: data as unknown as Json, status_code: 200,
+        });
+
+        // Fast pre-checks for STOP cases
         const { data: existing } = await supabaseAdmin
           .from("conversations").select("*")
           .eq("client_id", client.id).eq("subscriber_id", data.subscriber_id).maybeSingle();
 
-        const messages: Msg[] = Array.isArray(existing?.messages) ? (existing!.messages as unknown as Msg[]) : [];
-        const priorMessageCount = messages.length;
-        messages.push({ role: "user", content: data.message_text, timestamp: nowIso });
-
-        let convoId = existing?.id;
-        let qualification = (existing?.qualification ?? {}) as Record<string, unknown>;
-        let leadScore = existing?.lead_score ?? 0;
-        let status = existing?.status ?? "active";
-        let currentStage: Stage = ((existing?.current_stage as Stage | undefined) ?? "open");
-        const manualTakeover = existing?.manual_takeover ?? false;
-        const alreadyEscalated = existing?.escalated ?? false;
-
-        if (!existing) {
-          const { data: newRow, error: insErr } = await supabaseAdmin.from("conversations").insert({
-            client_id: client.id,
-            subscriber_id: data.subscriber_id,
-            phone: data.phone ?? null,
-            first_name: data.first_name ?? null,
-            messages: messages as unknown as Json,
-            last_message_at: nowIso,
-            current_stage: "open",
-          }).select("id").single();
-          if (insErr || !newRow) {
-            return new Response(JSON.stringify({ ai_reply: FALLBACK, error: "convo_insert_failed" }), { status: 500, headers: cors });
-          }
-          convoId = newRow.id;
-        }
-
-        // If already escalated to a human, log the inbound and skip AI entirely.
-        if (alreadyEscalated) {
+        if (existing?.escalated || existing?.manual_takeover) {
+          const nowIso = new Date().toISOString();
+          const msgs: Msg[] = Array.isArray(existing.messages) ? (existing.messages as unknown as Msg[]) : [];
+          msgs.push({ role: "user", content: data.message_text, timestamp: nowIso });
           await supabaseAdmin.from("conversations").update({
-            messages: messages as unknown as Json,
+            messages: msgs as unknown as Json,
             last_message_at: nowIso,
-            phone: data.phone ?? existing?.phone ?? null,
-            first_name: data.first_name ?? existing?.first_name ?? null,
-          }).eq("id", convoId!);
-          await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id, direction: "outbound",
-            payload: { skipped: "escalated" } as unknown as Json, status_code: 200,
-          });
-          return new Response(JSON.stringify({ ai_reply: "STOP", skip_send: true }), { headers: cors });
+            phone: data.phone ?? existing.phone ?? null,
+            first_name: data.first_name ?? existing.first_name ?? null,
+          }).eq("id", existing.id);
+          return ackStop();
         }
 
-        if (manualTakeover) {
-          await supabaseAdmin.from("conversations").update({
-            messages: messages as unknown as Json,
-            last_message_at: nowIso,
-            phone: data.phone ?? existing?.phone ?? null,
-            first_name: data.first_name ?? existing?.first_name ?? null,
-          }).eq("id", convoId!);
-          return new Response(JSON.stringify({ ai_reply: "STOP" }), { headers: cors });
-        }
-
-        const isFirstEverMessage = priorMessageCount === 0;
-        const systemPrompt = buildSystemPrompt(client as ClientRow, data.first_name ?? null, isFirstEverMessage);
-        // Memory ON: include full prior conversation history for context
-        const aiMessages = [
-          { role: "system" as const, content: systemPrompt },
-          ...messages.map((m) => ({
-            role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
-            content: m.content,
-          })),
-        ];
-
-        const aiKey = process.env.LOVABLE_API_KEY;
-        let aiReply = FALLBACK;
-        let parsedAI: AIResponse | null = null;
-        let aiResponseLog: unknown = null;
-        let aiStatusCode = 0;
-
-        if (!aiKey) {
-          aiResponseLog = { error: "missing_LOVABLE_API_KEY" };
-        } else {
-          try {
-            const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                "Lovable-API-Key": aiKey,
-              },
-              body: JSON.stringify({
-                model: "google/gemini-3-flash-preview",
-                messages: aiMessages,
-                response_format: { type: "json_object" },
-              }),
+        // Schedule heavy work; ManyChat gets an instant empty ack so its 10s
+        // timeout never fires. Real reply is pushed via ManyChat Send API.
+        runAfterResponse(
+          processAndSend(supabaseAdmin, client as ClientRow & { id: string }, data, existing ?? null).catch(async (err) => {
+            console.error("[manychat-webhook] processAndSend failed:", err);
+            await supabaseAdmin.from("webhook_logs").insert({
+              client_id: client.id, direction: "outbound",
+              payload: { error: "processAndSend_threw" } as unknown as Json,
+              response: { message: err instanceof Error ? err.message : String(err) } as Json,
+              status_code: 500,
             });
-            aiStatusCode = resp.status;
-            const json = await resp.json().catch(() => null);
-            aiResponseLog = json;
-            if (resp.ok && json?.choices?.[0]?.message?.content) {
-              const content = json.choices[0].message.content as string;
-              parsedAI = safeParseAIJson(content);
-              if (parsedAI && typeof parsedAI.reply === "string" && parsedAI.reply.trim().length > 0) {
-                aiReply = parsedAI.reply.trim();
-              }
-            }
-          } catch (err) {
-            aiResponseLog = { error: err instanceof Error ? err.message : String(err) };
-          }
-        }
+          }),
+        );
 
-        if (parsedAI?.qualification_update) {
-          qualification = { ...qualification, ...parsedAI.qualification_update };
-        }
-        if (parsedAI?.status_change) status = parsedAI.status_change;
-        if (parsedAI?.stage) currentStage = parsedAI.stage;
-        const bantKeys = ["budget", "authority", "need", "timing"] as const;
-        leadScore = bantKeys.reduce((acc, k) => acc + (qualification[k] === true ? 25 : 0), 0);
-
-        const shouldEscalate = parsedAI?.escalate === true;
-        if (shouldEscalate) {
-          status = "escalated";
-        }
-
-        // ---- BOOKING TOOL LOOP ----
-        // If AI requested a booking action, execute it and ask the model to draft a final reply.
-        const action = parsedAI?.booking_action;
-        let bookedAppointmentId: string | null = null;
-        if (!shouldEscalate && action && action.type !== "none") {
-          const { loadAvailabilityContext, generateSlots, bookAppointment } =
-            await import("@/lib/booking-core.server");
-
-          if (action.type === "check_availability") {
-            const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
-            if (!("error" in ctx)) {
-              const tz = ctx.timezone;
-              const target = resolveTargetDateTime(
-                action.preferred_date_label ?? null,
-                action.specific_time_local ?? null,
-                tz,
-              );
-              const window = (action.preferred_time_window || "any").toLowerCase();
-
-              // Search range: target day (if any) ± 1 day, else next 7 days
-              const anchor = target.date ?? new Date();
-              const rangeStart = new Date(anchor.getTime() - 24 * 60 * 60_000);
-              const rangeEnd = new Date(anchor.getTime() + 6 * 24 * 60 * 60_000);
-              const allSlots = generateSlots(ctx, rangeStart, rangeEnd, 80);
-
-              // Filter slots to same local day as target (if known)
-              const sameDay = target.localYmd
-                ? allSlots.filter((s) => localYmdInTz(new Date(s.start), tz) === target.localYmd)
-                : allSlots;
-
-              // Filter by time window
-              const windowed = sameDay.filter((s) => matchesWindow(new Date(s.start), tz, window));
-
-              let exactSlot: { start: string; label: string } | null = null;
-              if (target.exactUtcMs) {
-                const hit = allSlots.find(
-                  (s) => Math.abs(new Date(s.start).getTime() - target.exactUtcMs!) < 60_000,
-                );
-                if (hit) exactSlot = { start: hit.start, label: hit.label };
-              }
-
-              // Nearest 2 alternatives — prefer same day, then nearby; sort by closeness to target
-              const pool = (windowed.length ? windowed : sameDay.length ? sameDay : allSlots);
-              const anchorMs = target.exactUtcMs ?? anchor.getTime();
-              const alternatives = pool
-                .filter((s) => !exactSlot || s.start !== exactSlot.start)
-                .map((s) => ({ s, d: Math.abs(new Date(s.start).getTime() - anchorMs) }))
-                .sort((a, b) => a.d - b.d)
-                .slice(0, 2)
-                .map((x) => ({ start: x.s.start, label: x.s.label }));
-
-              const summary = JSON.stringify({
-                user_stated_time: action.user_stated_time ?? null,
-                timezone: tz,
-                exact_available: !!exactSlot,
-                exact_slot: exactSlot,
-                alternatives,
-                window_empty: pool.length === 0,
-              });
-
-              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "check_availability",
-                result: summary,
-                timezone: tz,
-              }) ?? aiReply;
-            }
-          } else if (action.type === "book_slot") {
-            const result = await bookAppointment(supabaseAdmin, {
-              clientId: client.id,
-              meetingTypeId: null,
-              startIso: action.slot_iso_utc,
-              contactName: data.first_name ?? null,
-              contactPhone: data.phone ?? null,
-              contactEmail: action.contact_email ?? null,
-              conversationId: convoId ?? null,
-              notes: null,
-              bookedVia: "ai",
-            });
-            if (result.ok) {
-              bookedAppointmentId = result.appointmentId;
-              status = "booked";
-              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "book_slot",
-                result: `Booked successfully for ${result.label}.`,
-              }) ?? `Booked for *${result.label}*. See you then.`;
-            } else {
-              aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "book_slot",
-                result: `Could not book: ${result.error}. Offer 1-2 nearest alternative slots conversationally.`,
-              }) ?? aiReply;
-            }
-          }
-        }
-
-        aiReply = sanitizeReplyText(aiReply);
-        messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
-
-        await supabaseAdmin.from("conversations").update({
-          messages: messages as unknown as Json,
-          qualification: qualification as unknown as Json,
-          lead_score: leadScore,
-          status,
-          current_stage: currentStage,
-          last_reasoning: parsedAI?.reasoning ?? null,
-          last_message_at: new Date().toISOString(),
-          phone: data.phone ?? existing?.phone ?? null,
-          first_name: data.first_name ?? existing?.first_name ?? null,
-          ...(shouldEscalate
-            ? {
-                escalated: true,
-                escalation_reason: parsedAI?.escalation_reason ?? "Escalated by AI",
-                escalated_at: new Date().toISOString(),
-              }
-            : {}),
-        }).eq("id", convoId!);
-
-        await supabaseAdmin.from("webhook_logs").insert({
-          client_id: client.id,
-          direction: "outbound",
-          payload: { reply: aiReply, parsed: parsedAI } as unknown as Json,
-          response: aiResponseLog as Json,
-          status_code: aiStatusCode || 200,
-        });
-
-        return new Response(JSON.stringify({ ai_reply: aiReply }), { headers: cors });
+        return ackEmpty();
       },
     },
   },
 });
+
+type ConvRow = NonNullable<Awaited<ReturnType<typeof fetchExistingConv>>>;
+async function fetchExistingConv(
+  supabaseAdmin: SupabaseAdmin,
+  clientId: string,
+  subscriberId: string,
+) {
+  const { data } = await supabaseAdmin
+    .from("conversations").select("*")
+    .eq("client_id", clientId).eq("subscriber_id", subscriberId).maybeSingle();
+  return data;
+}
+
+async function processAndSend(
+  supabaseAdmin: SupabaseAdmin,
+  client: ClientRow & { id: string },
+  data: z.infer<typeof Payload>,
+  existing: ConvRow | null,
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const messages: Msg[] = Array.isArray(existing?.messages) ? (existing!.messages as unknown as Msg[]) : [];
+  const priorMessageCount = messages.length;
+  messages.push({ role: "user", content: data.message_text, timestamp: nowIso });
+
+  let convoId = existing?.id;
+  let qualification = (existing?.qualification ?? {}) as Record<string, unknown>;
+  let leadScore = existing?.lead_score ?? 0;
+  let status = existing?.status ?? "active";
+  let currentStage: Stage = ((existing?.current_stage as Stage | undefined) ?? "open");
+
+  if (!existing) {
+    const { data: newRow, error: insErr } = await supabaseAdmin.from("conversations").insert({
+      client_id: client.id,
+      subscriber_id: data.subscriber_id,
+      phone: data.phone ?? null,
+      first_name: data.first_name ?? null,
+      messages: messages as unknown as Json,
+      last_message_at: nowIso,
+      current_stage: "open",
+    }).select("id").single();
+    if (insErr || !newRow) {
+      console.error("[processAndSend] convo insert failed:", insErr);
+      return;
+    }
+    convoId = newRow.id;
+  }
+
+  const isFirstEverMessage = priorMessageCount === 0;
+  const systemPrompt = buildSystemPrompt(client, data.first_name ?? null, isFirstEverMessage);
+  const aiMessages = [
+    { role: "system" as const, content: systemPrompt },
+    ...messages.map((m) => ({
+      role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+      content: m.content,
+    })),
+  ];
+
+  const aiKey = process.env.LOVABLE_API_KEY;
+  let aiReply = FALLBACK;
+  let parsedAI: AIResponse | null = null;
+  let aiResponseLog: unknown = null;
+  let aiStatusCode = 0;
+
+  if (!aiKey) {
+    aiResponseLog = { error: "missing_LOVABLE_API_KEY" };
+  } else {
+    try {
+      const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "Lovable-API-Key": aiKey,
+        },
+        body: JSON.stringify({
+          model: "google/gemini-3-flash-preview",
+          messages: aiMessages,
+          response_format: { type: "json_object" },
+        }),
+      });
+      aiStatusCode = resp.status;
+      const json = await resp.json().catch(() => null);
+      aiResponseLog = json;
+      if (resp.ok && json?.choices?.[0]?.message?.content) {
+        const content = json.choices[0].message.content as string;
+        parsedAI = safeParseAIJson(content);
+        if (parsedAI && typeof parsedAI.reply === "string" && parsedAI.reply.trim().length > 0) {
+          aiReply = parsedAI.reply.trim();
+        }
+      }
+    } catch (err) {
+      aiResponseLog = { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  if (parsedAI?.qualification_update) {
+    qualification = { ...qualification, ...parsedAI.qualification_update };
+  }
+  if (parsedAI?.status_change) status = parsedAI.status_change;
+  if (parsedAI?.stage) currentStage = parsedAI.stage;
+  const bantKeys = ["budget", "authority", "need", "timing"] as const;
+  leadScore = bantKeys.reduce((acc, k) => acc + (qualification[k] === true ? 25 : 0), 0);
+
+  const shouldEscalate = parsedAI?.escalate === true;
+  if (shouldEscalate) status = "escalated";
+
+  // ---- BOOKING TOOL LOOP ----
+  const action = parsedAI?.booking_action;
+  if (!shouldEscalate && action && action.type !== "none") {
+    const { loadAvailabilityContext, generateSlots, bookAppointment } =
+      await import("@/lib/booking-core.server");
+
+    if (action.type === "check_availability") {
+      const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
+      if (!("error" in ctx)) {
+        const tz = ctx.timezone;
+        const target = resolveTargetDateTime(
+          action.preferred_date_label ?? null,
+          action.specific_time_local ?? null,
+          tz,
+        );
+        const window = (action.preferred_time_window || "any").toLowerCase();
+
+        const anchor = target.date ?? new Date();
+        const rangeStart = new Date(anchor.getTime() - 24 * 60 * 60_000);
+        const rangeEnd = new Date(anchor.getTime() + 6 * 24 * 60 * 60_000);
+        const allSlots = generateSlots(ctx, rangeStart, rangeEnd, 80);
+
+        const sameDay = target.localYmd
+          ? allSlots.filter((s) => localYmdInTz(new Date(s.start), tz) === target.localYmd)
+          : allSlots;
+        const windowed = sameDay.filter((s) => matchesWindow(new Date(s.start), tz, window));
+
+        let exactSlot: { start: string; label: string } | null = null;
+        if (target.exactUtcMs) {
+          const hit = allSlots.find(
+            (s) => Math.abs(new Date(s.start).getTime() - target.exactUtcMs!) < 60_000,
+          );
+          if (hit) exactSlot = { start: hit.start, label: hit.label };
+        }
+
+        const pool = (windowed.length ? windowed : sameDay.length ? sameDay : allSlots);
+        const anchorMs = target.exactUtcMs ?? anchor.getTime();
+        const alternatives = pool
+          .filter((s) => !exactSlot || s.start !== exactSlot.start)
+          .map((s) => ({ s, d: Math.abs(new Date(s.start).getTime() - anchorMs) }))
+          .sort((a, b) => a.d - b.d)
+          .slice(0, 2)
+          .map((x) => ({ start: x.s.start, label: x.s.label }));
+
+        const summary = JSON.stringify({
+          user_stated_time: action.user_stated_time ?? null,
+          timezone: tz,
+          exact_available: !!exactSlot,
+          exact_slot: exactSlot,
+          alternatives,
+          window_empty: pool.length === 0,
+        });
+
+        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+          tool: "check_availability",
+          result: summary,
+          timezone: tz,
+        }) ?? aiReply;
+      }
+    } else if (action.type === "book_slot") {
+      const result = await bookAppointment(supabaseAdmin, {
+        clientId: client.id,
+        meetingTypeId: null,
+        startIso: action.slot_iso_utc,
+        contactName: data.first_name ?? null,
+        contactPhone: data.phone ?? null,
+        contactEmail: action.contact_email ?? null,
+        conversationId: convoId ?? null,
+        notes: null,
+        bookedVia: "ai",
+      });
+      if (result.ok) {
+        status = "booked";
+        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+          tool: "book_slot",
+          result: `Booked successfully for ${result.label}.`,
+        }) ?? `Booked for *${result.label}*. See you then.`;
+      } else {
+        aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
+          tool: "book_slot",
+          result: `Could not book: ${result.error}. Offer 1-2 nearest alternative slots conversationally.`,
+        }) ?? aiReply;
+      }
+    }
+  }
+
+  aiReply = sanitizeReplyText(aiReply);
+  messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
+
+  await supabaseAdmin.from("conversations").update({
+    messages: messages as unknown as Json,
+    qualification: qualification as unknown as Json,
+    lead_score: leadScore,
+    status,
+    current_stage: currentStage,
+    last_reasoning: parsedAI?.reasoning ?? null,
+    last_message_at: new Date().toISOString(),
+    phone: data.phone ?? existing?.phone ?? null,
+    first_name: data.first_name ?? existing?.first_name ?? null,
+    ...(shouldEscalate
+      ? {
+          escalated: true,
+          escalation_reason: parsedAI?.escalation_reason ?? "Escalated by AI",
+          escalated_at: new Date().toISOString(),
+        }
+      : {}),
+  }).eq("id", convoId!);
+
+  // Push to user via ManyChat Send API (async pattern)
+  const sendRes = await sendWhatsAppText(data.subscriber_id, aiReply);
+
+  await supabaseAdmin.from("webhook_logs").insert({
+    client_id: client.id,
+    direction: "outbound",
+    payload: {
+      reply: aiReply,
+      parsed: parsedAI,
+      ai_status: aiStatusCode || 200,
+      manychat_send_ok: sendRes.ok,
+      manychat_send_status: sendRes.status,
+      manychat_send_error: sendRes.ok ? null : sendRes.error,
+    } as unknown as Json,
+    response: { ai: aiResponseLog, manychat: sendRes.body ?? null } as Json,
+    status_code: sendRes.ok ? 200 : (sendRes.status || 500),
+    error: sendRes.ok ? null : sendRes.error,
+  });
+}
+
 
 async function draftBookingReply(
   aiKey: string | undefined,
