@@ -27,6 +27,8 @@ type AIResponse = {
   reasoning?: string;
   ready_to_book?: boolean;
   status_change?: "qualified" | "booked" | "lost" | null;
+  escalate?: boolean;
+  escalation_reason?: string;
 };
 
 type Msg = { role: "user" | "assistant"; content: string; timestamp: string };
@@ -125,6 +127,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           .eq("client_id", client.id).eq("subscriber_id", data.subscriber_id).maybeSingle();
 
         const messages: Msg[] = Array.isArray(existing?.messages) ? (existing!.messages as unknown as Msg[]) : [];
+        const priorMessageCount = messages.length;
         messages.push({ role: "user", content: data.message_text, timestamp: nowIso });
 
         let convoId = existing?.id;
@@ -133,6 +136,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         let status = existing?.status ?? "active";
         let currentStage: Stage = ((existing?.current_stage as Stage | undefined) ?? "open");
         const manualTakeover = existing?.manual_takeover ?? false;
+        const alreadyEscalated = existing?.escalated ?? false;
 
         if (!existing) {
           const { data: newRow, error: insErr } = await supabaseAdmin.from("conversations").insert({
@@ -150,6 +154,21 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           convoId = newRow.id;
         }
 
+        // If already escalated to a human, log the inbound and skip AI entirely.
+        if (alreadyEscalated) {
+          await supabaseAdmin.from("conversations").update({
+            messages: messages as unknown as Json,
+            last_message_at: nowIso,
+            phone: data.phone ?? existing?.phone ?? null,
+            first_name: data.first_name ?? existing?.first_name ?? null,
+          }).eq("id", convoId!);
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id, direction: "outbound",
+            payload: { skipped: "escalated" } as unknown as Json, status_code: 200,
+          });
+          return new Response(JSON.stringify({ ai_reply: "", skip_send: true }), { headers: cors });
+        }
+
         if (manualTakeover) {
           await supabaseAdmin.from("conversations").update({
             messages: messages as unknown as Json,
@@ -160,7 +179,8 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           return new Response(JSON.stringify({ ai_reply: "" }), { headers: cors });
         }
 
-        const systemPrompt = buildSystemPrompt(client as ClientRow, data.first_name ?? null);
+        const isFirstEverMessage = priorMessageCount === 0;
+        const systemPrompt = buildSystemPrompt(client as ClientRow, data.first_name ?? null, isFirstEverMessage);
         // TEMP: memory disabled — only send the current user message, no prior history
         const aiMessages = [
           { role: "system" as const, content: systemPrompt },
@@ -216,6 +236,11 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const bantKeys = ["budget", "authority", "need", "timing"] as const;
         leadScore = bantKeys.reduce((acc, k) => acc + (qualification[k] === true ? 25 : 0), 0);
 
+        const shouldEscalate = parsedAI?.escalate === true;
+        if (shouldEscalate) {
+          status = "escalated";
+        }
+
         messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
 
         await supabaseAdmin.from("conversations").update({
@@ -228,6 +253,13 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           last_message_at: new Date().toISOString(),
           phone: data.phone ?? existing?.phone ?? null,
           first_name: data.first_name ?? existing?.first_name ?? null,
+          ...(shouldEscalate
+            ? {
+                escalated: true,
+                escalation_reason: parsedAI?.escalation_reason ?? "Escalated by AI",
+                escalated_at: new Date().toISOString(),
+              }
+            : {}),
         }).eq("id", convoId!);
 
         await supabaseAdmin.from("webhook_logs").insert({
@@ -244,13 +276,26 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
   },
 });
 
-function buildSystemPrompt(client: ClientRow, firstName: string | null): string {
+function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
   const blocks: string[] = [];
 
   // BLOCK 1 — IDENTITY & ROLE
   blocks.push(
     `You are the AI concierge for ${client.business_name}. You message leads on WhatsApp the way a sharp, warm, premium human receptionist would — never like a chatbot, never like a form, never like a salesperson chasing a close. You are calm, confident, curious, and you carry the brand's premium energy in every reply.`
   );
+
+  // BLOCK 2A — FIRST MESSAGE ONLY (premium opener)
+  if (isFirstEverMessage) {
+    blocks.push(
+      `FIRST MESSAGE ONLY — this is the very first message in this conversation (no prior history). Do NOT use the standard Stage 1 single-question opener. Instead, send ONE premium, warm message with this exact structure:
+
+1. A warm one-line welcome${firstName ? ` using their first name (${firstName})` : " (use their first name if known)"} — genuinely glad-you're-here in tone, never generic ("Hi, how can I help"). Write fresh wording, do not template.
+2. Exactly THREE short bullet points using the • symbol (not markdown dashes), each one short outcome-focused phrase about ${client.business_name} — pull from the services list, pick the 3 most relevant/compelling capabilities, punchy one-liners (no periods).
+3. End with ONE warm, specific, open discovery question that flows naturally after the bullets.
+
+Keep it tight: 4-6 lines total including the bullets. Premium tone — confident, unhurried, never salesy, no exclamation spam. After this first message, all future replies follow the normal Stage 1-7 flow below. This special structure applies ONLY to message #1, never again.`
+    );
+  }
 
   // BLOCK 2 — CONVERSATION STATE MACHINE
   blocks.push(
@@ -333,23 +378,6 @@ When ANY hesitation or objection comes up, do NOT defend, do NOT discount, do NO
 2. ASK — one question that uncovers the REAL concern.
 3. REFRAME — only after you understand, give one precise reframe.
 
-Examples of the pattern (do not copy verbatim, adapt to context):
-
-If "too expensive":
-→ "Totally fair. Out of curiosity — is it the number itself, or you're not sure yet what kind of return it would bring you?"
-
-If "let me think about it":
-→ "Of course. What's the part you want to think over?"
-
-If "I'll ask my partner / manager":
-→ "Makes sense. What do you think they'll want to know first?"
-
-If "we already have a system":
-→ "Got it. What does your current one do really well, and where does it fall short for you?"
-
-If "send me details / send a brochure":
-→ "Happy to — but most of what makes this work depends on your specific setup. A 15-min call would tell you more in 5 minutes than any deck could. Want me to lock a time?"
-
 NEVER discount. NEVER drop the price. NEVER over-explain features.`
   );
 
@@ -371,6 +399,22 @@ Booking link (share only when inviting them to a demo): ${client.booking_link ||
     blocks.push(`ADDITIONAL CLIENT-SPECIFIC INSTRUCTIONS\n${client.system_prompt_override.trim()}`);
   }
 
+  // BLOCK 9 — ESCALATION DETECTION
+  blocks.push(
+    `ESCALATION DETECTION
+Watch for these signals across the conversation:
+- They explicitly ask for a human / real person / "talk to someone"
+- Clear frustration or anger (short angry replies, caps, repeated complaints, "this isn't working", "you're not understanding me")
+- They've asked the same thing 2+ times and still seem confused or unsatisfied with your answers
+- Hostile, abusive, or clearly off-the-rails messages
+
+If ANY of these trigger, do NOT keep troubleshooting or pitching. Instead, send ONE warm, reassuring message acknowledging them and letting them know a real person from the team will personally take it from here — keep it short, human, never apologetic-robotic. Then set escalate=true and escalation_reason to a one-line summary of why.
+
+Example pattern (write fresh, never copy verbatim): "Totally fair${firstName ? `, ${firstName}` : ""} — let me get one of our team to jump in directly so this gets sorted properly. They'll be with you shortly."
+
+After escalation is set, this is your LAST message in the conversation. Do not continue discovery, do not pitch, do not ask further questions.`
+  );
+
   // BLOCK 8 — OUTPUT CONTRACT
   blocks.push(
     `OUTPUT CONTRACT (strict JSON, no markdown)
@@ -386,7 +430,9 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
   },
   "reasoning": "<one short line explaining why you replied this way — for internal logging only>",
   "ready_to_book": <boolean>,
-  "status_change": "qualified" | "booked" | "lost" | null
+  "status_change": "qualified" | "booked" | "lost" | null,
+  "escalate": <boolean — true only when the Block 9 escalation rules apply>,
+  "escalation_reason": "<one short line, only when escalate=true>"
 }`
   );
 
