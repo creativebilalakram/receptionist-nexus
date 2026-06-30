@@ -197,6 +197,10 @@ function BookingSettingsSection({ clientId }: { clientId: string }) {
         <Labeled label="Min notice (minutes)"><Input type="number" min={0} value={data.min_notice_minutes} onChange={(e) => patch({ min_notice_minutes: Number(e.target.value) })} /></Labeled>
         <Labeled label="Max advance (days)"><Input type="number" min={1} value={data.max_advance_days} onChange={(e) => patch({ max_advance_days: Number(e.target.value) })} /></Labeled>
         <Labeled label="Cancellation window (hours)"><Input type="number" min={0} value={data.cancellation_window_hours} onChange={(e) => patch({ cancellation_window_hours: Number(e.target.value) })} /></Labeled>
+        <Labeled label="Auto-buffer after meetings (minutes)" className="sm:col-span-2">
+          <Input type="number" min={0} max={60} value={data.auto_buffer_after_minutes ?? 15} onChange={(e) => patch({ auto_buffer_after_minutes: Number(e.target.value) })} />
+          <p className="mt-1 text-xs text-muted-foreground">Invisible buffer added after every meeting to absorb overruns. The lead never sees this — it just keeps the calendar from double-booking when meetings run long. Default 15 minutes.</p>
+        </Labeled>
         <Labeled label="First reminder (hours before)"><Input type="number" min={0} value={data.reminder_hours_before} onChange={(e) => patch({ reminder_hours_before: Number(e.target.value) })} /></Labeled>
         <Labeled label="Second reminder (hours before)"><Input type="number" min={0} value={data.second_reminder_hours_before} onChange={(e) => patch({ second_reminder_hours_before: Number(e.target.value) })} /></Labeled>
         <Labeled label="ManyChat API key (for reminders)" className="sm:col-span-2">
