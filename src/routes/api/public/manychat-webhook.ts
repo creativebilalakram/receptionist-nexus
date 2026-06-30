@@ -611,7 +611,6 @@ function pickAckText(
   }
   return actionType === "book_slot" ? "one sec, *booking* it now…" : "one sec, let me *check*…";
 }
-}
 
 function safeParseAIJson(content: string): AIResponse | null {
   const tryParse = (s: string): AIResponse | null => {
