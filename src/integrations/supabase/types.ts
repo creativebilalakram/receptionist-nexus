@@ -132,6 +132,9 @@ export type Database = {
           client_id: string
           created_at: string
           current_stage: string
+          escalated: boolean
+          escalated_at: string | null
+          escalation_reason: string | null
           first_name: string | null
           id: string
           last_message_at: string | null
@@ -148,6 +151,9 @@ export type Database = {
           client_id: string
           created_at?: string
           current_stage?: string
+          escalated?: boolean
+          escalated_at?: string | null
+          escalation_reason?: string | null
           first_name?: string | null
           id?: string
           last_message_at?: string | null
@@ -164,6 +170,9 @@ export type Database = {
           client_id?: string
           created_at?: string
           current_stage?: string
+          escalated?: boolean
+          escalated_at?: string | null
+          escalation_reason?: string | null
           first_name?: string | null
           id?: string
           last_message_at?: string | null

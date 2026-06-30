@@ -1,0 +1,4 @@
+ALTER TABLE public.conversations
+  ADD COLUMN IF NOT EXISTS escalated BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS escalation_reason TEXT,
+  ADD COLUMN IF NOT EXISTS escalated_at TIMESTAMPTZ;
