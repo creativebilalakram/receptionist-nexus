@@ -16,6 +16,7 @@ import { Route as AuthenticatedFailuresRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedAppointmentsRouteImport } from './routes/_authenticated/appointments'
 import { Route as AuthenticatedClientsIndexRouteImport } from './routes/_authenticated/clients.index'
+import { Route as ApiPublicResendOpenersRouteImport } from './routes/api/public/resend-openers'
 import { Route as ApiPublicManychatWebhookRouteImport } from './routes/api/public/manychat-webhook'
 import { Route as ApiPublicFollowupsRouteImport } from './routes/api/public/followups'
 import { Route as ApiPublicBookingRemindersRouteImport } from './routes/api/public/booking-reminders'
@@ -59,6 +60,11 @@ const AuthenticatedClientsIndexRoute =
     path: '/clients/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const ApiPublicResendOpenersRoute = ApiPublicResendOpenersRouteImport.update({
+  id: '/api/public/resend-openers',
+  path: '/api/public/resend-openers',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicManychatWebhookRoute =
   ApiPublicManychatWebhookRouteImport.update({
     id: '/api/public/manychat-webhook',
@@ -105,6 +111,7 @@ export interface FileRoutesByFullPath {
   '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
   '/api/public/followups': typeof ApiPublicFollowupsRoute
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
+  '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/clients/': typeof AuthenticatedClientsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -119,6 +126,7 @@ export interface FileRoutesByTo {
   '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
   '/api/public/followups': typeof ApiPublicFollowupsRoute
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
+  '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/clients': typeof AuthenticatedClientsIndexRoute
 }
 export interface FileRoutesById {
@@ -135,6 +143,7 @@ export interface FileRoutesById {
   '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
   '/api/public/followups': typeof ApiPublicFollowupsRoute
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
+  '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/_authenticated/clients/': typeof AuthenticatedClientsIndexRoute
 }
 export interface FileRouteTypes {
@@ -151,6 +160,7 @@ export interface FileRouteTypes {
     | '/api/public/booking-reminders'
     | '/api/public/followups'
     | '/api/public/manychat-webhook'
+    | '/api/public/resend-openers'
     | '/clients/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -165,6 +175,7 @@ export interface FileRouteTypes {
     | '/api/public/booking-reminders'
     | '/api/public/followups'
     | '/api/public/manychat-webhook'
+    | '/api/public/resend-openers'
     | '/clients'
   id:
     | '__root__'
@@ -180,6 +191,7 @@ export interface FileRouteTypes {
     | '/api/public/booking-reminders'
     | '/api/public/followups'
     | '/api/public/manychat-webhook'
+    | '/api/public/resend-openers'
     | '/_authenticated/clients/'
   fileRoutesById: FileRoutesById
 }
@@ -190,6 +202,7 @@ export interface RootRouteChildren {
   ApiPublicBookingRemindersRoute: typeof ApiPublicBookingRemindersRoute
   ApiPublicFollowupsRoute: typeof ApiPublicFollowupsRoute
   ApiPublicManychatWebhookRoute: typeof ApiPublicManychatWebhookRoute
+  ApiPublicResendOpenersRoute: typeof ApiPublicResendOpenersRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -242,6 +255,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/clients/'
       preLoaderRoute: typeof AuthenticatedClientsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/api/public/resend-openers': {
+      id: '/api/public/resend-openers'
+      path: '/api/public/resend-openers'
+      fullPath: '/api/public/resend-openers'
+      preLoaderRoute: typeof ApiPublicResendOpenersRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/public/manychat-webhook': {
       id: '/api/public/manychat-webhook'
@@ -318,17 +338,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicBookingRemindersRoute: ApiPublicBookingRemindersRoute,
   ApiPublicFollowupsRoute: ApiPublicFollowupsRoute,
   ApiPublicManychatWebhookRoute: ApiPublicManychatWebhookRoute,
+  ApiPublicResendOpenersRoute: ApiPublicResendOpenersRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
