@@ -346,6 +346,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           }
         }
 
+        aiReply = sanitizeReplyText(aiReply);
         messages.push({ role: "assistant", content: aiReply, timestamp: new Date().toISOString() });
 
         await supabaseAdmin.from("conversations").update({
