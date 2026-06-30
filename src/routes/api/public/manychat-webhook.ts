@@ -16,8 +16,14 @@ const FALLBACK = "Give me one moment, let me check on that for you.";
 type Stage = "open" | "discover" | "qualify" | "position" | "invite" | "objection" | "close" | "park";
 
 type BookingAction =
-  | { type: "get_slots"; from_iso?: string; days?: number }
-  | { type: "book"; start_iso: string; contact_name?: string; contact_email?: string; notes?: string }
+  | {
+      type: "check_availability";
+      user_stated_time?: string;
+      preferred_date_label?: string;
+      preferred_time_window?: "morning" | "afternoon" | "evening" | "specific_time" | "any" | string;
+      specific_time_local?: string | null;
+    }
+  | { type: "book_slot"; slot_iso_utc: string; contact_email?: string | null }
   | { type: "none" };
 
 type AIResponse = {
@@ -251,48 +257,90 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const action = parsedAI?.booking_action;
         let bookedAppointmentId: string | null = null;
         if (!shouldEscalate && action && action.type !== "none") {
-          const { loadAvailabilityContext, generateSlots, bookAppointment, formatSlotLabel } =
+          const { loadAvailabilityContext, generateSlots, bookAppointment } =
             await import("@/lib/booking-core.server");
 
-          if (action.type === "get_slots") {
-            const from = action.from_iso ? new Date(action.from_iso) : new Date();
-            const days = Math.min(Math.max(action.days ?? 7, 1), 14);
-            const to = new Date(from.getTime() + days * 24 * 60 * 60_000);
+          if (action.type === "check_availability") {
             const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
             if (!("error" in ctx)) {
-              const slots = generateSlots(ctx, from, to, 6);
-              const slotsText = slots.length
-                ? slots.map((s, i) => `${i + 1}. ${s.label} (${s.start})`).join("\n")
-                : "No open slots in that window.";
+              const tz = ctx.timezone;
+              const target = resolveTargetDateTime(
+                action.preferred_date_label ?? null,
+                action.specific_time_local ?? null,
+                tz,
+              );
+              const window = (action.preferred_time_window || "any").toLowerCase();
+
+              // Search range: target day (if any) ± 1 day, else next 7 days
+              const anchor = target.date ?? new Date();
+              const rangeStart = new Date(anchor.getTime() - 24 * 60 * 60_000);
+              const rangeEnd = new Date(anchor.getTime() + 6 * 24 * 60 * 60_000);
+              const allSlots = generateSlots(ctx, rangeStart, rangeEnd, 80);
+
+              // Filter slots to same local day as target (if known)
+              const sameDay = target.localYmd
+                ? allSlots.filter((s) => localYmdInTz(new Date(s.start), tz) === target.localYmd)
+                : allSlots;
+
+              // Filter by time window
+              const windowed = sameDay.filter((s) => matchesWindow(new Date(s.start), tz, window));
+
+              let exactSlot: { start: string; label: string } | null = null;
+              if (target.exactUtcMs) {
+                const hit = allSlots.find(
+                  (s) => Math.abs(new Date(s.start).getTime() - target.exactUtcMs!) < 60_000,
+                );
+                if (hit) exactSlot = { start: hit.start, label: hit.label };
+              }
+
+              // Nearest 2 alternatives — prefer same day, then nearby; sort by closeness to target
+              const pool = (windowed.length ? windowed : sameDay.length ? sameDay : allSlots);
+              const anchorMs = target.exactUtcMs ?? anchor.getTime();
+              const alternatives = pool
+                .filter((s) => !exactSlot || s.start !== exactSlot.start)
+                .map((s) => ({ s, d: Math.abs(new Date(s.start).getTime() - anchorMs) }))
+                .sort((a, b) => a.d - b.d)
+                .slice(0, 2)
+                .map((x) => ({ start: x.s.start, label: x.s.label }));
+
+              const summary = JSON.stringify({
+                user_stated_time: action.user_stated_time ?? null,
+                timezone: tz,
+                exact_available: !!exactSlot,
+                exact_slot: exactSlot,
+                alternatives,
+                window_empty: pool.length === 0,
+              });
+
               aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "get_slots",
-                result: slotsText,
-                timezone: ctx.timezone,
+                tool: "check_availability",
+                result: summary,
+                timezone: tz,
               }) ?? aiReply;
             }
-          } else if (action.type === "book") {
+          } else if (action.type === "book_slot") {
             const result = await bookAppointment(supabaseAdmin, {
               clientId: client.id,
               meetingTypeId: null,
-              startIso: action.start_iso,
-              contactName: action.contact_name ?? data.first_name ?? null,
+              startIso: action.slot_iso_utc,
+              contactName: data.first_name ?? null,
               contactPhone: data.phone ?? null,
               contactEmail: action.contact_email ?? null,
               conversationId: convoId ?? null,
-              notes: action.notes ?? null,
+              notes: null,
               bookedVia: "ai",
             });
             if (result.ok) {
               bookedAppointmentId = result.appointmentId;
               status = "booked";
               aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "book",
+                tool: "book_slot",
                 result: `Booked successfully for ${result.label}.`,
               }) ?? `Booked for *${result.label}*. See you then.`;
             } else {
               aiReply = await draftBookingReply(aiKey, systemPrompt, messages, {
-                tool: "book",
-                result: `Could not book: ${result.error}. Offer alternative slots.`,
+                tool: "book_slot",
+                result: `Could not book: ${result.error}. Offer 1-2 nearest alternative slots conversationally.`,
               }) ?? aiReply;
             }
           }
@@ -351,7 +399,7 @@ async function draftBookingReply(
           ...messages.map((m) => ({ role: m.role, content: m.content })),
           {
             role: "system",
-            content: `TOOL_RESULT (${toolResult.tool})${toolResult.timezone ? ` [timezone: ${toolResult.timezone}]` : ""}:\n${toolResult.result}\n\nNow draft ONLY the final WhatsApp reply text (no JSON, no preamble). Follow all tone rules. If presenting slots, list them as a short numbered list using the human-readable label only (drop the ISO). If the booking succeeded, confirm warmly in 1-2 lines.`,
+            content: `TOOL_RESULT (${toolResult.tool})${toolResult.timezone ? ` [timezone: ${toolResult.timezone}]` : ""}:\n${toolResult.result}\n\nNow draft ONLY the final WhatsApp reply text (no JSON, no preamble, no markdown fences). Follow ALL tone rules (1-3 lines, *bold* on key words, no dashes/dividers, mirror their language). For check_availability: if exact_available=true → confirm naturally and ask to lock it in (one short question). If exact_available=false and alternatives exist → naturally mention 1-2 alternatives conversationally in flowing prose (NEVER numbered lists, NEVER bullets — write "I have *2:30pm* or *4pm* same day, either work?"). If window_empty=true → acknowledge warmly and widen the question (e.g. ask about a different day). Always state the timezone label naturally when giving a time. For book_slot: warm 1-2 line confirmation; if no contact email known yet, ask for it in the same message framed as "so I can send a calendar invite too".`,
           },
         ],
       }),
@@ -525,25 +573,50 @@ Example pattern (write fresh, never copy verbatim): "Totally fair${firstName ? `
 After escalation is set, this is your LAST message in the conversation. Do not continue discovery, do not pitch, do not ask further questions.`
   );
 
-  // BLOCK 10 — NATIVE BOOKING (in-WhatsApp)
+  // BLOCK 10 — BOOKING PROTOCOL (natural, time-first)
   blocks.push(
-    `NATIVE BOOKING (in-WhatsApp, never send external links)
-You can book demos / appointments directly inside this chat. Do NOT share the external booking link unless the user explicitly insists. Use the booking_action field in your JSON to invoke a tool:
+    `BLOCK 10 — BOOKING PROTOCOL (natural, time-first)
+When the lead is qualified or explicitly asks to book, you handle the booking entirely inside this chat. Never share an external calendar link.
 
-- booking_action = { "type": "get_slots", "from_iso": "<ISO8601 start, optional, defaults to now>", "days": <1-14, optional, default 7> }
-  Use when the user wants to see available times, or you're ready to invite them to book and need to show options.
-  Your "reply" field this turn should be a short warm lead-in like "Let me find some times for you." — the system will append the actual slot list in the NEXT generation step. Keep the lead-in 1 line.
+The flow is conversational, not menu-driven. You take ONE step at a time, mirror their language, never overwhelm.
 
-- booking_action = { "type": "book", "start_iso": "<exact ISO8601 from a previously shown slot>", "contact_name": "<optional>", "contact_email": "<optional>", "notes": "<optional brief note>" }
-  Use ONLY after the user has clearly picked a specific slot you offered. Confirm understanding first if ambiguous. Never invent a time — use only ISO strings from the most recent get_slots result in conversation history.
+STEP 1 — Ask their preference, naturally and openly. Examples of the shape (write fresh wording every time, never copy verbatim):
+- "When works best for you?"
+- "Got a time in mind?"
+- "Morning or evening person?"
+Never present slots yet. Just ask. booking_action = { "type": "none" }.
 
-- booking_action = { "type": "none" }  → default for any non-booking turn.
+STEP 2 — They respond with their preferred time. It can be vague ("tomorrow afternoon", "sometime Friday") or specific ("Wed 4pm", "Tuesday 11am PKT"). Take whatever they give.
+Emit:
+booking_action = {
+  "type": "check_availability",
+  "user_stated_time": "<their exact phrase, verbatim>",
+  "preferred_date_label": "<tomorrow | friday | YYYY-MM-DD | etc>",
+  "preferred_time_window": "<morning | afternoon | evening | specific_time | any>",
+  "specific_time_local": "<HH:MM in 24h if they gave one, else null>"
+}
+Your "reply" this turn should be a brief warm holding phrase or empty — the second pass will compose the real reply once availability is back.
 
-RULES:
-- Never list times you have not retrieved via get_slots. No hallucinated availability.
-- When a user asks "can I book?" / "kal kis time available ho?" / similar → call get_slots first.
-- Single-question rule still applies — after slots are shown, ask which one works for them.
-- After successful booking (the next turn's reply), set status_change="booked".
+STEP 3 — Pass 2 receives availability result. Three cases:
+CASE A — Exact time available → confirm naturally and ask to lock it in. booking_action = { "type": "none" }, wait for their yes.
+CASE B — Exact time NOT available, alternatives exist → naturally offer 1-2 nearest options in flowing prose (NEVER bullets, NEVER numbered). Max 2 alternatives.
+CASE C — Nothing in their window → acknowledge warmly, widen the question, never dump a long list.
+
+STEP 4 — They confirm a specific time (yours or theirs). Emit:
+booking_action = {
+  "type": "book_slot",
+  "slot_iso_utc": "<exact ISO string from the most recent availability result>",
+  "contact_email": "<if already collected, else null>"
+}
+
+STEP 5 — Pass 2 receives booking confirmation. Send a warm confirmation. If you don't have their email yet, ask in the SAME message — frame as "so I can send a calendar invite too". Set status_change="booked".
+
+CRITICAL RULES:
+- NEVER present more than 2 time options in any single message.
+- NEVER use numbered lists or bullets for slots — keep it conversational ("2:30 or 4pm same day" not "1. 2:30pm  2. 4pm").
+- NEVER offer a slot the backend didn't return in the most recent availability result.
+- Always state the timezone label naturally when giving a time.
+- booking_action = { "type": "none" } for any non-booking turn.
 
 OUTPUT CONTRACT (strict JSON, no markdown)
 Respond with ONLY a JSON object, no markdown fences, no prose:
@@ -561,9 +634,107 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
   "status_change": "qualified" | "booked" | "lost" | null,
   "escalate": <boolean — true only when the Block 9 escalation rules apply>,
   "escalation_reason": "<one short line, only when escalate=true>",
-  "booking_action": { "type": "none" } | { "type": "get_slots", "from_iso": "<iso?>", "days": <number?> } | { "type": "book", "start_iso": "<iso>", "contact_name": "<?>", "contact_email": "<?>", "notes": "<?>" }
+  "booking_action":
+      { "type": "none" }
+    | { "type": "check_availability", "user_stated_time": "<verbatim>", "preferred_date_label": "<label?>", "preferred_time_window": "morning|afternoon|evening|specific_time|any", "specific_time_local": "<HH:MM|null>" }
+    | { "type": "book_slot", "slot_iso_utc": "<iso>", "contact_email": "<email|null>" }
 }`
   );
 
   return blocks.join("\n\n");
+}
+
+// ---------- Booking helpers ----------
+
+function localYmdInTz(at: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(at);
+}
+
+function localHourInTz(at: Date, timeZone: string): number {
+  const h = new Intl.DateTimeFormat("en-US", {
+    timeZone, hour: "2-digit", hour12: false,
+  }).format(at);
+  return parseInt(h.replace(/[^\d]/g, ""), 10);
+}
+
+function matchesWindow(at: Date, tz: string, window: string): boolean {
+  if (!window || window === "any" || window === "specific_time") return true;
+  const h = localHourInTz(at, tz);
+  if (window === "morning") return h >= 5 && h < 12;
+  if (window === "afternoon") return h >= 12 && h < 17;
+  if (window === "evening") return h >= 17 && h < 23;
+  return true;
+}
+
+function tzOffsetMinutes(at: Date, timeZone: string): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const parts = dtf.formatToParts(at).reduce<Record<string, string>>((acc, p) => {
+    if (p.type !== "literal") acc[p.type] = p.value;
+    return acc;
+  }, {});
+  const asUtc = Date.UTC(
+    parseInt(parts.year), parseInt(parts.month) - 1, parseInt(parts.day),
+    parseInt(parts.hour), parseInt(parts.minute), parseInt(parts.second),
+  );
+  return Math.round((asUtc - at.getTime()) / 60_000);
+}
+
+function resolveTargetDateTime(
+  dateLabel: string | null,
+  timeLocal: string | null,
+  tz: string,
+): { date: Date | null; localYmd: string | null; exactUtcMs: number | null } {
+  const nowYmd = localYmdInTz(new Date(), tz);
+  let ymd: string | null = null;
+
+  if (dateLabel) {
+    const label = dateLabel.trim().toLowerCase();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(label)) {
+      ymd = label;
+    } else if (label === "today" || label === "aaj") {
+      ymd = nowYmd;
+    } else if (label === "tomorrow" || label === "kal") {
+      const d = new Date(`${nowYmd}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + 1);
+      ymd = d.toISOString().slice(0, 10);
+    } else {
+      // Weekday name
+      const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+      const idx = weekdays.findIndex((w) => label.startsWith(w.slice(0, 3)));
+      if (idx >= 0) {
+        const todayDow = new Date().getUTCDay(); // rough
+        const todayLocal = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(new Date());
+        const localDow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(todayLocal);
+        const delta = ((idx - localDow) + 7) % 7 || 7;
+        const d = new Date(`${nowYmd}T12:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + delta);
+        ymd = d.toISOString().slice(0, 10);
+      }
+    }
+  }
+
+  if (!ymd) {
+    return { date: null, localYmd: null, exactUtcMs: null };
+  }
+
+  // Anchor noon-local for that day
+  const naiveNoon = new Date(`${ymd}T12:00:00Z`);
+  const offMin = tzOffsetMinutes(naiveNoon, tz);
+  const dayAnchor = new Date(naiveNoon.getTime() - offMin * 60_000);
+
+  let exactUtcMs: number | null = null;
+  if (timeLocal && /^\d{2}:\d{2}$/.test(timeLocal)) {
+    const [h, m] = timeLocal.split(":").map((n) => parseInt(n, 10));
+    const naive = new Date(`${ymd}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`);
+    const off = tzOffsetMinutes(naive, tz);
+    exactUtcMs = naive.getTime() - off * 60_000;
+  }
+
+  return { date: dayAnchor, localYmd: ymd, exactUtcMs };
 }
