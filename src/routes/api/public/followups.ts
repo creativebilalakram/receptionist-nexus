@@ -133,16 +133,15 @@ async function generateFollowup(args: {
   messages: Msg[];
   stage: string | null;
 }): Promise<string | null> {
-  const aiKey = process.env.LOVABLE_API_KEY;
+  const aiKey = process.env.OPENAI_API_KEY;
   if (!aiKey) return null;
+  const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-  // Detect language from last user message
-  const lastUser = [...args.messages].reverse().find((m) => m.role === "user")?.content ?? "";
   const transcript = args.messages.slice(-12).map((m) =>
     `${m.role === "user" ? "USER" : "AI"}: ${m.content}`
   ).join("\n");
 
-  const system = `You are the WhatsApp receptionist for *${args.client.business_name}*. The lead went silent. Write ONE warm, human, personalized follow-up message to gently re-engage them.
+  const system = `You are the WhatsApp receptionist for *${args.client.business_name}*. The lead went silent. Write ONE warm, human, personalized follow-up.
 
 BUSINESS: ${args.client.business_name}${args.client.niche ? ` — ${args.client.niche}` : ""}
 SERVICES: ${args.client.services ?? "(unspecified)"}
@@ -154,30 +153,21 @@ STAGE WHEN THEY DROPPED: ${args.stage ?? "open"}
 CONVERSATION SO FAR:
 ${transcript}
 
-RULES (non-negotiable):
-- Write in the SAME language/script as the last user message (English, Roman Urdu, Urdu script, Hindi, Arabic — mirror them).
-- 1–3 short lines max. No long paragraphs.
-- Bold important words with single asterisks like *this*.
-- NO dashes (---), no bullet characters, no markdown headings.
-- Do NOT say "just following up" or any generic template line. Reference something specific they said or the exact point they dropped off.
-- Sound human, calm, helpful. Light curiosity, no pressure.
-- End with ONE small soft question that makes replying easy (yes/no or pick a time).
-- Do NOT add greetings like "Hi again" if the conversation was already mid-flow. Just continue naturally.
-- Output ONLY the message text. No JSON, no quotes, no labels.`;
+RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings. Reference something specific they said. End with ONE soft question. Output ONLY the message text.`;
 
   try {
     const { retryFetch } = await import("@/lib/retry");
-    const resp = await retryFetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const resp = await retryFetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { "content-type": "application/json", "Lovable-API-Key": aiKey },
+      headers: { "content-type": "application/json", "Authorization": `Bearer ${aiKey}` },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: aiModel,
         messages: [
           { role: "system", content: system },
           { role: "user", content: "Write the follow-up message now." },
         ],
       }),
-    }, { attempts: 2, baseMs: 500, timeoutMs: 15_000, label: "ai-followup" });
+    }, { attempts: 2, baseMs: 500, timeoutMs: 15_000, label: "openai-followup" });
     if (!resp.ok) return null;
     const json: any = await resp.json().catch(() => null);
     const text = json?.choices?.[0]?.message?.content;
