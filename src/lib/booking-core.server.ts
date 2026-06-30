@@ -11,7 +11,15 @@ export type Slot = { start: string; end: string; label: string };
 export type MeetingType = Database["public"]["Tables"]["meeting_types"]["Row"];
 export type BookingSettings = Database["public"]["Tables"]["booking_settings"]["Row"];
 
-const SLOT_STEP_MIN = 15;
+// Slot stepping is derived from meeting footprint, never hardcoded.
+// step = meeting.duration + meeting.buffer_before + meeting.buffer_after + booking_settings.auto_buffer_after
+function computeStepMinutes(mt: MeetingType, settings: BookingSettings): number {
+  const dur = mt.duration_minutes ?? 30;
+  const bb = mt.buffer_before_minutes ?? 0;
+  const ba = mt.buffer_after_minutes ?? 0;
+  const auto = settings.auto_buffer_after_minutes ?? 15;
+  return Math.max(5, dur + bb + ba + auto);
+}
 
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -88,20 +96,26 @@ export async function loadAvailabilityContext(
   const [rulesRes, blocksRes, apptsRes] = await Promise.all([
     supabase.from("availability_rules").select("*").eq("client_id", clientId).eq("is_enabled", true),
     supabase.from("blocked_dates").select("*").eq("client_id", clientId),
-    supabase.from("appointments").select("scheduled_at,duration_minutes,meeting_type_id,status")
+    supabase.from("appointments").select("scheduled_at,duration_minutes,meeting_type_id,status,effective_end_at")
       .eq("client_id", clientId).neq("status", "cancelled"),
   ]);
 
   const meetingType = mtRes.data;
+  const settings = setRes.data;
+  const autoBuf = settings.auto_buffer_after_minutes ?? 15;
   const busy = (apptsRes.data ?? []).map((a) => {
     const start = new Date(a.scheduled_at);
+    if (a.effective_end_at) {
+      return { start, end: new Date(a.effective_end_at) };
+    }
     const dur = a.duration_minutes ?? meetingType.duration_minutes;
-    return { start, end: addMinutes(start, dur) };
+    // Fallback: duration + meeting after-buffer + global auto-buffer
+    return { start, end: addMinutes(start, dur + (meetingType.buffer_after_minutes ?? 0) + autoBuf) };
   });
 
   return {
     meetingType,
-    settings: setRes.data,
+    settings,
     timezone,
     rules: rulesRes.data ?? [],
     blocks: blocksRes.data ?? [],
@@ -141,25 +155,29 @@ export function generateSlots(
     if (rule) {
       const winStart = zonedTimeToUtc(dateStr, rule.start_time.slice(0, 5), timezone);
       const winEnd = zonedTimeToUtc(dateStr, rule.end_time.slice(0, 5), timezone);
-      const step = SLOT_STEP_MIN;
       const dur = meetingType.duration_minutes;
-      const bb = meetingType.buffer_before_minutes;
-      const ba = meetingType.buffer_after_minutes;
+      const bb = meetingType.buffer_before_minutes ?? 0;
+      const ba = meetingType.buffer_after_minutes ?? 0;
+      const autoBuf = settings.auto_buffer_after_minutes ?? 15;
+      const step = computeStepMinutes(meetingType, settings);
+      // Full footprint occupied on the calendar (invisible to lead).
+      const footprint = dur + ba + autoBuf;
 
-      for (let t = new Date(winStart); addMinutes(t, dur) <= winEnd; t = addMinutes(t, step)) {
+      for (let t = new Date(winStart); addMinutes(t, footprint) <= winEnd; t = addMinutes(t, step)) {
         if (slots.length >= maxSlots) break;
         const slotStart = t;
-        const slotEnd = addMinutes(t, dur);
-        if (slotStart < lowerBound || slotEnd > upperBound) continue;
+        const slotEnd = addMinutes(t, dur); // user-facing end
+        const occupyEnd = addMinutes(t, footprint); // calendar footprint
+        if (slotStart < lowerBound || occupyEnd > upperBound) continue;
 
         const blockHit = blocks.some((b) => {
           const bs = new Date(b.start_at), be = new Date(b.end_at);
-          return slotStart < be && slotEnd > bs;
+          return slotStart < be && occupyEnd > bs;
         });
         if (blockHit) continue;
 
         const conflictStart = addMinutes(slotStart, -bb);
-        const conflictEnd = addMinutes(slotEnd, ba);
+        const conflictEnd = occupyEnd;
         const busyHit = busy.some((x) => conflictStart < x.end && conflictEnd > x.start);
         if (busyHit) continue;
 
@@ -209,11 +227,16 @@ export async function bookAppointment(
   const ok = validSlots.some((s) => Math.abs(new Date(s.start).getTime() - start.getTime()) < 60_000);
   if (!ok) return { ok: false, error: "slot_unavailable" };
 
+  const ba = ctx.meetingType.buffer_after_minutes ?? 0;
+  const autoBuf = ctx.settings.auto_buffer_after_minutes ?? 15;
+  const effectiveEnd = addMinutes(start, ctx.meetingType.duration_minutes + ba + autoBuf);
+
   const { data, error } = await supabase.from("appointments").insert({
     client_id: args.clientId,
     meeting_type_id: ctx.meetingType.id,
     scheduled_at: start.toISOString(),
     duration_minutes: ctx.meetingType.duration_minutes,
+    effective_end_at: effectiveEnd.toISOString(),
     contact_name: args.contactName ?? null,
     contact_phone: args.contactPhone ?? null,
     contact_email: args.contactEmail ?? null,

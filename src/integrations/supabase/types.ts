@@ -25,6 +25,7 @@ export type Database = {
           conversation_id: string | null
           created_at: string
           duration_minutes: number | null
+          effective_end_at: string | null
           id: string
           meeting_type_id: string | null
           notes: string | null
@@ -45,6 +46,7 @@ export type Database = {
           conversation_id?: string | null
           created_at?: string
           duration_minutes?: number | null
+          effective_end_at?: string | null
           id?: string
           meeting_type_id?: string | null
           notes?: string | null
@@ -65,6 +67,7 @@ export type Database = {
           conversation_id?: string | null
           created_at?: string
           duration_minutes?: number | null
+          effective_end_at?: string | null
           id?: string
           meeting_type_id?: string | null
           notes?: string | null
@@ -181,6 +184,7 @@ export type Database = {
       }
       booking_settings: {
         Row: {
+          auto_buffer_after_minutes: number
           cancellation_window_hours: number
           client_id: string
           confirmation_template: string
@@ -194,6 +198,7 @@ export type Database = {
           second_reminder_hours_before: number
         }
         Insert: {
+          auto_buffer_after_minutes?: number
           cancellation_window_hours?: number
           client_id: string
           confirmation_template?: string
@@ -207,6 +212,7 @@ export type Database = {
           second_reminder_hours_before?: number
         }
         Update: {
+          auto_buffer_after_minutes?: number
           cancellation_window_hours?: number
           client_id?: string
           confirmation_template?: string
