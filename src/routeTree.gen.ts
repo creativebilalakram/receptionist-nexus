@@ -16,6 +16,7 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedAppointmentsRouteImport } from './routes/_authenticated/appointments'
 import { Route as AuthenticatedClientsIndexRouteImport } from './routes/_authenticated/clients.index'
 import { Route as ApiPublicManychatWebhookRouteImport } from './routes/api/public/manychat-webhook'
+import { Route as ApiPublicBookingRemindersRouteImport } from './routes/api/public/booking-reminders'
 import { Route as AuthenticatedConversationsIdRouteImport } from './routes/_authenticated/conversations.$id'
 import { Route as AuthenticatedClientsNewRouteImport } from './routes/_authenticated/clients.new'
 import { Route as AuthenticatedClientsIdRouteImport } from './routes/_authenticated/clients.$id'
@@ -57,6 +58,12 @@ const ApiPublicManychatWebhookRoute =
     path: '/api/public/manychat-webhook',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicBookingRemindersRoute =
+  ApiPublicBookingRemindersRouteImport.update({
+    id: '/api/public/booking-reminders',
+    path: '/api/public/booking-reminders',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const AuthenticatedConversationsIdRoute =
   AuthenticatedConversationsIdRouteImport.update({
     id: '/conversations/$id',
@@ -82,6 +89,7 @@ export interface FileRoutesByFullPath {
   '/clients/$id': typeof AuthenticatedClientsIdRoute
   '/clients/new': typeof AuthenticatedClientsNewRoute
   '/conversations/$id': typeof AuthenticatedConversationsIdRoute
+  '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/clients/': typeof AuthenticatedClientsIndexRoute
 }
@@ -93,6 +101,7 @@ export interface FileRoutesByTo {
   '/clients/$id': typeof AuthenticatedClientsIdRoute
   '/clients/new': typeof AuthenticatedClientsNewRoute
   '/conversations/$id': typeof AuthenticatedConversationsIdRoute
+  '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/clients': typeof AuthenticatedClientsIndexRoute
 }
@@ -106,6 +115,7 @@ export interface FileRoutesById {
   '/_authenticated/clients/$id': typeof AuthenticatedClientsIdRoute
   '/_authenticated/clients/new': typeof AuthenticatedClientsNewRoute
   '/_authenticated/conversations/$id': typeof AuthenticatedConversationsIdRoute
+  '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/_authenticated/clients/': typeof AuthenticatedClientsIndexRoute
 }
@@ -119,6 +129,7 @@ export interface FileRouteTypes {
     | '/clients/$id'
     | '/clients/new'
     | '/conversations/$id'
+    | '/api/public/booking-reminders'
     | '/api/public/manychat-webhook'
     | '/clients/'
   fileRoutesByTo: FileRoutesByTo
@@ -130,6 +141,7 @@ export interface FileRouteTypes {
     | '/clients/$id'
     | '/clients/new'
     | '/conversations/$id'
+    | '/api/public/booking-reminders'
     | '/api/public/manychat-webhook'
     | '/clients'
   id:
@@ -142,6 +154,7 @@ export interface FileRouteTypes {
     | '/_authenticated/clients/$id'
     | '/_authenticated/clients/new'
     | '/_authenticated/conversations/$id'
+    | '/api/public/booking-reminders'
     | '/api/public/manychat-webhook'
     | '/_authenticated/clients/'
   fileRoutesById: FileRoutesById
@@ -150,6 +163,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
+  ApiPublicBookingRemindersRoute: typeof ApiPublicBookingRemindersRoute
   ApiPublicManychatWebhookRoute: typeof ApiPublicManychatWebhookRoute
 }
 
@@ -204,6 +218,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicManychatWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/booking-reminders': {
+      id: '/api/public/booking-reminders'
+      path: '/api/public/booking-reminders'
+      fullPath: '/api/public/booking-reminders'
+      preLoaderRoute: typeof ApiPublicBookingRemindersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_authenticated/conversations/$id': {
       id: '/_authenticated/conversations/$id'
       path: '/conversations/$id'
@@ -253,6 +274,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
+  ApiPublicBookingRemindersRoute: ApiPublicBookingRemindersRoute,
   ApiPublicManychatWebhookRoute: ApiPublicManychatWebhookRoute,
 }
 export const routeTree = rootRouteImport
