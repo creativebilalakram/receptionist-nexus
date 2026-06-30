@@ -41,15 +41,34 @@ function AppointmentsPage() {
               <h2 className="mb-3 text-sm font-semibold tracking-tight">{clientName}</h2>
               <div className="overflow-hidden rounded-xl border border-border bg-card">
                 <ul className="divide-y divide-border">
-                  {appts.map((a) => (
-                    <li key={a.id} className="flex items-center justify-between gap-4 px-6 py-3 text-sm">
-                      <div>
-                        <div className="font-medium">{formatDateTime(a.scheduled_at)}</div>
-                        {a.notes && <div className="mt-0.5 text-xs text-muted-foreground">{a.notes}</div>}
-                      </div>
-                      <StatusPill status={a.status} />
-                    </li>
-                  ))}
+                  {appts.map((a) => {
+                    const dur = a.duration_minutes ?? 30;
+                    const bufferMin = a.effective_end_at
+                      ? Math.max(0, Math.round((new Date(a.effective_end_at).getTime() - new Date(a.scheduled_at).getTime()) / 60000) - dur)
+                      : 0;
+                    return (
+                      <li key={a.id} className="flex items-center justify-between gap-4 px-6 py-3 text-sm">
+                        <div className="min-w-0">
+                          <div className="font-medium">{formatDateTime(a.scheduled_at)}</div>
+                          <div
+                            className="mt-1 flex items-center gap-0 overflow-hidden rounded-md border border-border"
+                            title={`${dur}-min meeting${bufferMin > 0 ? ` + ${bufferMin}-min auto-buffer` : ""}`}
+                          >
+                            <span className="bg-primary/30 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider" style={{ flexGrow: dur }}>
+                              {dur}m meeting
+                            </span>
+                            {bufferMin > 0 && (
+                              <span className="bg-primary/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground" style={{ flexGrow: bufferMin }}>
+                                +{bufferMin}m buffer
+                              </span>
+                            )}
+                          </div>
+                          {a.notes && <div className="mt-1 text-xs text-muted-foreground">{a.notes}</div>}
+                        </div>
+                        <StatusPill status={a.status} />
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             </section>
