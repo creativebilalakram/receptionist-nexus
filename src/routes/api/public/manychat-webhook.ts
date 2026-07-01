@@ -1565,7 +1565,112 @@ function pickAvailabilityFailureText(lastUserText: string): string {
   });
 }
 
-function resolveSlotFromConversation(
+// ---------- List / cancel / reschedule helpers ----------
+
+type AppointmentTarget = { id: string; label: string; startIso: string };
+
+async function fetchUpcomingForConversation(
+  supabase: SupabaseAdmin,
+  clientId: string,
+  conversationId: string | null,
+): Promise<AppointmentTarget[]> {
+  const nowIso = new Date().toISOString();
+  let q = supabase.from("appointments")
+    .select("id, scheduled_at, status, meeting_type_id")
+    .eq("client_id", clientId)
+    .in("status", ["scheduled", "confirmed"])
+    .gte("scheduled_at", nowIso)
+    .order("scheduled_at", { ascending: true })
+    .limit(5);
+  if (conversationId) q = q.eq("conversation_id", conversationId);
+  const { data, error } = await q;
+  if (error || !data) return [];
+  const { data: cli } = await supabase.from("clients").select("timezone").eq("id", clientId).maybeSingle();
+  const tz = cli?.timezone || "UTC";
+  return data.map((a) => ({
+    id: a.id,
+    startIso: a.scheduled_at,
+    label: formatSlotLabelInTz(new Date(a.scheduled_at), tz),
+  }));
+}
+
+async function pickTargetAppointment(
+  supabase: SupabaseAdmin,
+  clientId: string,
+  conversationId: string | null,
+  explicitId: string | null,
+): Promise<AppointmentTarget | null> {
+  if (explicitId) {
+    const { data } = await supabase.from("appointments")
+      .select("id, scheduled_at").eq("id", explicitId).eq("client_id", clientId).maybeSingle();
+    if (data) {
+      const { data: cli } = await supabase.from("clients").select("timezone").eq("id", clientId).maybeSingle();
+      return { id: data.id, startIso: data.scheduled_at, label: formatSlotLabelInTz(new Date(data.scheduled_at), cli?.timezone || "UTC") };
+    }
+  }
+  const list = await fetchUpcomingForConversation(supabase, clientId, conversationId);
+  return list[0] ?? null;
+}
+
+function formatSlotLabelInTz(d: Date, tz: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, weekday: "short", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true,
+  }).format(d);
+}
+
+function composeListBookingsReply(list: AppointmentTarget[], lastUserText: string): string {
+  if (list.length === 0) return composeNoBookingFoundReply(lastUserText);
+  if (list.length === 1) {
+    const label = list[0].label;
+    return localizedText(lastUserText, {
+      roman: `Aap ki upcoming booking *${label}* pe hai. Reschedule ya cancel karni ho to bata dein.`,
+      english: `Your upcoming booking is on *${label}*. Want to reschedule or cancel?`,
+      urdu: `آپ کی upcoming booking *${label}* پر ہے۔ Reschedule یا cancel کرنی ہو تو بتائیں۔`,
+      hindi: `आपकी upcoming booking *${label}* पर है। Reschedule या cancel करनी हो तो बताएँ।`,
+      arabic: `حجزك القادم في *${label}*. تريد إعادة الجدولة أو الإلغاء؟`,
+    });
+  }
+  const first = list[0].label, second = list[1].label;
+  return localizedText(lastUserText, {
+    roman: `Aap ki upcoming bookings: *${first}* aur *${second}*. Kis pe kaam karna hai?`,
+    english: `Your upcoming bookings: *${first}* and *${second}*. Which one do you want to work on?`,
+    urdu: `آپ کی upcoming bookings: *${first}* اور *${second}*۔ کس پر کام کرنا ہے؟`,
+    hindi: `आपकी upcoming bookings: *${first}* और *${second}*। किस पर काम करना है?`,
+    arabic: `حجوزاتك القادمة: *${first}* و *${second}*. أيها تريد التعامل معه؟`,
+  });
+}
+
+function composeNoBookingFoundReply(lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: "Aap ki koi upcoming booking nahi mili. Nayi book karni ho to time bata dein.",
+    english: "I don’t see any upcoming booking on file. Want me to set one up?",
+    urdu: "آپ کی کوئی upcoming booking نہیں مل رہی۔ نئی book کرنی ہو تو time بتائیں۔",
+    hindi: "आपकी कोई upcoming booking नहीं मिल रही। नई book करनी हो तो time बताएँ।",
+    arabic: "لا أرى أي حجز قادم لك. تريد أن أرتب لك حجزاً جديداً؟",
+  });
+}
+
+function composeCancelSuccessReply(label: string, lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: `Ho gaya, *${label}* wali booking cancel kar di. Nayi time chahiye to bata dein.`,
+    english: `Done, your *${label}* booking has been cancelled. Want to pick a new time?`,
+    urdu: `ہو گیا، *${label}* والی booking cancel کر دی۔ نیا time چاہیے تو بتائیں۔`,
+    hindi: `हो गया, *${label}* वाली booking cancel कर दी। नया time चाहिए तो बताएँ।`,
+    arabic: `تم إلغاء حجز *${label}*. تريد اختيار وقت جديد؟`,
+  });
+}
+
+function composeRescheduleSuccessReply(oldLabel: string, newLabel: string, lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: `Ho gaya, *${oldLabel}* se move karke *${newLabel}* pe reschedule kar di.`,
+    english: `Done, moved from *${oldLabel}* to *${newLabel}*.`,
+    urdu: `ہو گیا، *${oldLabel}* سے *${newLabel}* پر reschedule کر دی۔`,
+    hindi: `हो गया, *${oldLabel}* से *${newLabel}* पर reschedule कर दी।`,
+    arabic: `تم النقل من *${oldLabel}* إلى *${newLabel}*.`,
+  });
+}
+
   ctx: { timezone: string },
   messages: Msg[],
   lastUserText: string,
