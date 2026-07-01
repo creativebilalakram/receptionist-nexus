@@ -630,6 +630,12 @@ async function processAndSend(
     aiReply = pickPostAckFiller(data.message_text);
   }
 
+  // FIX 6: de-list — convert any numbered / bulleted list into flowing prose.
+  // Skip the premium opener; its "• " bullets are intentional and structural.
+  if (!isFirstEverMessage) {
+    aiReply = delistReplyText(aiReply);
+  }
+
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
   // FIX 1: the premium first-message opener MUST arrive as ONE bubble so the
   // closing question is never dropped by autoSplit or a delivery hiccup.
@@ -639,7 +645,7 @@ async function processAndSend(
   } else {
     const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
       ? parsedAI!.reply_parts!
-          .map((p) => (typeof p === "string" ? sanitizeReplyText(p) : ""))
+          .map((p) => (typeof p === "string" ? delistReplyText(sanitizeReplyText(p)) : ""))
           .filter((p) => p && p.trim().length > 0)
       : [];
     if (modelParts.length > 0) {
@@ -1217,6 +1223,50 @@ function sanitizeReplyText(text: string): string {
   return out;
 }
 
+/**
+ * FIX 6 — De-list formatter. Converts robotic numbered / bulleted lists into
+ * conversational flowing prose. WhatsApp receptionists don't send:
+ *   "1. Option A\n2. Option B\n3. Option C"
+ * They send: "Option A, Option B, or Option C — which works?"
+ *
+ * Applied to every reply EXCEPT the premium first-message opener, which uses
+ * intentional "• " bullets that are part of its designed structure.
+ */
+function delistReplyText(text: string): string {
+  if (!text) return text;
+  const raw = text.replace(/\r\n/g, "\n");
+  const lines = raw.split("\n");
+
+  // Detect list items: "1. ", "1) ", "- ", "* ", "• ", "· ", "→ ", "▪ "
+  const listRe = /^\s*(?:\d{1,2}[.)]\s+|[-*•·▪→]\s+)(.+?)\s*$/;
+  const items: string[] = [];
+  const nonList: string[] = [];
+  let listRun = 0;
+
+  for (const line of lines) {
+    const m = line.match(listRe);
+    if (m) {
+      items.push(m[1].trim().replace(/[.,;:]+$/, ""));
+      listRun++;
+    } else if (line.trim() === "" && listRun > 0) {
+      // blank inside/after list — keep, don't reset yet
+    } else {
+      nonList.push(line);
+    }
+  }
+
+  // Only rewrite if we actually detected a list of 2+ items.
+  if (items.length < 2) return text;
+
+  const prose = items.length === 2
+    ? `${items[0]} or ${items[1]}`
+    : `${items.slice(0, -1).join(", ")}, or ${items[items.length - 1]}`;
+
+  const kept = nonList.map((l) => l.trim()).filter(Boolean).join("\n");
+  return (kept ? kept + " " : "") + prose;
+}
+
+
 
 
 
@@ -1313,6 +1363,7 @@ LENGTH (critical — short = human, long = robot):
 STYLE:
 - Bold the 1-2 words that carry meaning using WhatsApp single-asterisk syntax: *word*. Never bold full sentences.
 - NEVER use dashes as separators or dividers. No "---", no "—", no "–", no horizontal rules. Plain line breaks only.
+- NEVER use numbered lists ("1. ...", "2. ...") or bullet points ("- ", "* ", "• ") anywhere in normal replies. Write options as flowing prose: "*2:30pm* or *4pm*, which works?" — NOT "1. 2:30pm  2. 4pm". Lists feel like a form; humans don't send forms on WhatsApp.
 - No filler openers. NEVER start with "Great question!" / "Absolutely!" / "I understand" / "Sure thing" / "Of course" — banned.
 - Match their energy: formal if formal, casual if casual. Use their first name occasionally, not every message.
 - One emoji per 4-5 messages MAX, only if it fits. Never more than one exclamation per message.
