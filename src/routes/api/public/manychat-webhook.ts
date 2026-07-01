@@ -827,6 +827,30 @@ async function processAndSend(
         }
       }
 
+      // (2b) last-offered fallback — if we still don't have a validated ISO,
+      // try the slot we most recently told this user was available. This is
+      // the fix for the "confirmed 10am, but book_slot got a random ISO for
+      // today" failure: honor what the user actually said yes to.
+      if (!validatedIso && !("error" in ctx) && offeredSlotIso) {
+        const offeredMs = new Date(offeredSlotIso).getTime();
+        if (!Number.isNaN(offeredMs) && offeredMs > nowMs - 5 * 60_000) {
+          const hit = tryMatchAround(offeredMs);
+          if (hit) {
+            validatedIso = hit;
+            await supabaseAdmin.from("webhook_logs").insert({
+              client_id: client.id,
+              direction: "outbound",
+              payload: {
+                kind: "book_slot_recovered_from_last_offered",
+                original_iso: action.slot_iso_utc,
+                recovered_iso: hit,
+              } as unknown as Json,
+              status_code: 200,
+            });
+          }
+        }
+      }
+
       if (!validatedIso && !("error" in ctx)) {
         // (3) recovery — anchor to NOW, never to the hallucinated ISO.
         const tz = ctx.timezone;
