@@ -636,6 +636,17 @@ async function processAndSend(
     aiReply = delistReplyText(aiReply);
   }
 
+  // FIX 10: strip any sentence that promises to send a deliverable we don't
+  // actually have (video / PDF / brochure / deck / screenshot / case study /
+  // recording / walkthrough / sample). Applies to every turn, including the
+  // opener. If the scrub leaves an empty reply, fall back to a safe filler.
+  const preScrub = aiReply;
+  aiReply = scrubImaginaryOffers(aiReply);
+  if (!aiReply.trim()) {
+    aiReply = pickPostAckFiller(data.message_text) || preScrub;
+  }
+
+
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
   // FIX 1: the premium first-message opener MUST arrive as ONE bubble so the
   // closing question is never dropped by autoSplit or a delivery hiccup.
@@ -645,9 +656,11 @@ async function processAndSend(
   } else {
     const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
       ? parsedAI!.reply_parts!
-          .map((p) => (typeof p === "string" ? delistReplyText(sanitizeReplyText(p)) : ""))
+          .map((p) => (typeof p === "string" ? scrubImaginaryOffers(delistReplyText(sanitizeReplyText(p))) : ""))
           .filter((p) => p && p.trim().length > 0)
       : [];
+
+
     if (modelParts.length > 0) {
       parts = modelParts.slice(0, 3); // hard cap 3 bubbles
     } else {
@@ -1293,6 +1306,38 @@ function delistReplyText(text: string): string {
   return (kept ? kept + " " : "") + prose;
 }
 
+/**
+ * FIX 10 — Scrub imaginary deliverable offers.
+ *
+ * The bot has been caught offering things it cannot actually send: demo
+ * videos, PDFs, brochures, decks, case studies, screenshots, recordings,
+ * walkthroughs, samples. None of those exist as artifacts in this system —
+ * the only thing we can legitimately share is the *booking_link* and, once
+ * booked, a calendar invite. Offering anything else breaks trust the moment
+ * the user says "haan bhejo" and nothing arrives.
+ *
+ * This pass drops any sentence that promises to send/share such a deliverable
+ * (English + Roman Urdu). If the entire reply was one such sentence, it is
+ * replaced with a safe generic re-open so we don't ship an empty bubble.
+ */
+const IMAGINARY_ARTIFACT_RE = /(video|videos|pdf|pdfs|brochure|deck|slide\s?deck|slides|screenshot|screen\s?shot|case[\s-]?stud(?:y|ies)|recording|walk[\s-]?through(?:\s+video)?|sample|portfolio\s+file|attachment|attach)/i;
+const SEND_VERB_RE = /(send|share|forward|attach|drop|deliver|email|whatsapp\s+you|bhej\w*|forwar\w*|share\s+kar\w*|send\s+kar\w*|bhej\s*d\w*|arsalna|أرسل|ارسل|ابعث)/i;
+
+function scrubImaginaryOffers(text: string): string {
+  if (!text) return text;
+  // Split into sentences while preserving line breaks.
+  const chunks = text.split(/(?<=[.!?…])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const kept = chunks.filter((s) => {
+    // Drop if the sentence both mentions a deliverable AND a send verb.
+    return !(IMAGINARY_ARTIFACT_RE.test(s) && SEND_VERB_RE.test(s));
+  });
+  if (kept.length === 0) return "";
+  return kept.join(" ");
+}
+
+
+
+
 
 
 
@@ -1423,7 +1468,23 @@ NEVER say or do any of these:
 - Sending multiple messages back to back
 - Asking more than ONE question in a single message
 - Explaining features when they asked about benefits
-- Defending price when objected to (instead: understand WHY)`
+- Defending price when objected to (instead: understand WHY)
+
+CAPABILITY INVENTORY (FIX 10 — do NOT offer anything not on this list):
+The ONLY things you can actually deliver in this conversation are:
+  (a) a booked demo/appointment (via the booking tools),
+  (b) the booking link once available,
+  (c) a calendar invite AFTER a booking is confirmed.
+You do NOT have — and MUST NEVER offer to send — any of the following:
+demo videos, walkthrough videos, screen recordings, PDFs, brochures,
+decks, slide decks, screenshots, case studies, portfolios, samples,
+attachments, files, or "I'll email/WhatsApp you a ..." of any kind.
+If the user asks for a video / PDF / brochure / case study, do NOT
+promise to send one. Instead, offer a short *live demo call* on their
+preferred time as the alternative. Ban phrases like "video bhej doon",
+"send you a quick video", "share a PDF", "brochure bhej dun",
+"case study bhejta hoon", "screenshot share kar doon".`
+
   );
 
   // BLOCK 5 — OBJECTION PROTOCOL

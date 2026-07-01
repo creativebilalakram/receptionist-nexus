@@ -194,6 +194,16 @@ function dedupAgainstHistory(candidate: string, history: Msg[]): string | null {
   return candidate;
 }
 
+// FIX 10 — see manychat-webhook.ts for the sibling implementation.
+const FU_ARTIFACT_RE = /(video|videos|pdf|pdfs|brochure|deck|slide\s?deck|slides|screenshot|screen\s?shot|case[\s-]?stud(?:y|ies)|recording|walk[\s-]?through(?:\s+video)?|sample|portfolio\s+file|attachment|attach)/i;
+const FU_SEND_VERB_RE = /(send|share|forward|attach|drop|deliver|email|whatsapp\s+you|bhej\w*|forwar\w*|share\s+kar\w*|send\s+kar\w*|bhej\s*d\w*)/i;
+function scrubImaginaryOffersFollowup(text: string): string {
+  if (!text) return text;
+  const chunks = text.split(/(?<=[.!?…])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const kept = chunks.filter((s) => !(FU_ARTIFACT_RE.test(s) && FU_SEND_VERB_RE.test(s)));
+  return kept.join(" ");
+}
+
 async function generateFollowup(args: {
   client: { business_name: string; niche: string | null; services: string | null; icp: string | null; tone_notes: string | null; faq: string | null; booking_link: string | null };
   firstName: string | null;
@@ -250,7 +260,9 @@ ${transcript}
 
 ANTI-FABRICATION: ${substanceGuidance}
 
-RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Never say phrases like "as you mentioned", "regarding what you said about X", "circling back on your interest in Y" unless X/Y literally appears in USER MESSAGES above. Output ONLY the message text.`;
+RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Never say phrases like "as you mentioned", "regarding what you said about X", "circling back on your interest in Y" unless X/Y literally appears in USER MESSAGES above. Output ONLY the message text.
+
+CAPABILITY INVENTORY (CRITICAL — FIX 10): the ONLY thing you can deliver is a booked demo call and the booking link. You do NOT have and MUST NEVER offer: demo videos, walkthrough videos, screen recordings, PDFs, brochures, decks, slides, screenshots, case studies, portfolios, samples, attachments, files, or any "let me send you a ...". Do NOT write "video bhej doon", "send you a quick video", "share a PDF", "brochure bhej dun", "case study bhejta hoon", "recording share kar doon", or any variant. If a re-engagement hook is needed, offer a short *live demo call* instead — never a file.`;
 
 
   try {
@@ -275,6 +287,11 @@ RULES: mirror their language/script. 1–3 short lines. *bold* key words. No das
     cleaned = cleaned.split("\n").filter((l) => !/^-{3,}$/.test(l.trim())).join("\n").trim();
     // Scrub unresolved placeholders that might leak into the reply
     cleaned = cleaned.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
+    // FIX 10 — drop any sentence that promises a nonexistent deliverable
+    // (video / PDF / brochure / deck / screenshot / case study / recording /
+    // walkthrough / sample). If the whole message was one such offer, skip
+    // sending anything rather than shipping half a promise.
+    cleaned = scrubImaginaryOffersFollowup(cleaned);
     return cleaned.length > 0 && cleaned.length < 700 ? cleaned : null;
   } catch {
     return null;
