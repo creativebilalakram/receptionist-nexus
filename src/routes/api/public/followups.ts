@@ -205,13 +205,31 @@ async function generateFollowup(args: {
   if (!aiKey) return null;
   const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-  const transcript = args.messages.slice(-12).map((m) =>
-    `${m.role === "user" ? "USER" : "AI"}: ${m.content}`
+  // Only include REAL messages the user actually typed. Never invent anything else.
+  const trimmed = args.messages.slice(-12);
+  const transcript = trimmed.map((m) =>
+    `${m.role === "user" ? "USER" : "AI"}: ${(m.content ?? "").trim()}`
   ).join("\n");
 
+  // Extract the user's own words verbatim so the model has an explicit
+  // whitelist of what it's allowed to reference.
+  const userUtterances = trimmed
+    .filter((m) => m.role === "user")
+    .map((m) => (m.content ?? "").trim())
+    .filter((t) => t.length > 0);
+  const userWordsBlock = userUtterances.length
+    ? userUtterances.map((t, i) => `  [${i + 1}] "${t}"`).join("\n")
+    : "  (none — the lead has not shared any real details yet)";
+
+  const hasRealSubstance = userUtterances.some((t) => t.length >= 15);
+
   const attemptGuidance = args.attempt <= 1
-    ? "This is the FIRST follow-up. Warm, curious, low pressure. Reference something specific they said."
+    ? "This is the FIRST follow-up. Warm, curious, low pressure."
     : `This is follow-up #${args.attempt}. Take a DIFFERENT angle than any prior message — new hook, new question. Do NOT repeat earlier phrasing. Acknowledge time has passed, keep it light, no guilt-trip.`;
+
+  const substanceGuidance = hasRealSubstance
+    ? "You MAY reference specifics the user actually shared — but ONLY things that appear verbatim in USER MESSAGES above. Quote or paraphrase them exactly."
+    : "The user has NOT shared any real details yet (only greetings). You MUST NOT invent a topic, business type, timeline, pain point, or anything they 'mentioned' — they mentioned nothing. Write a short, light re-open that acknowledges you're still around and asks ONE open, generic question inviting them to share what's on their mind. Do NOT pretend a prior discussion happened.";
 
   const system = `You are the WhatsApp receptionist for *${args.client.business_name}*. The lead went silent. Write ONE warm, human, personalized follow-up.
 
@@ -224,10 +242,16 @@ STAGE WHEN THEY DROPPED: ${args.stage ?? "open"}
 
 ${attemptGuidance}
 
-CONVERSATION SO FAR:
+USER MESSAGES (verbatim — the ONLY things they've actually said):
+${userWordsBlock}
+
+FULL TRANSCRIPT (for context — do not reference AI's own past claims as if they were the user's):
 ${transcript}
 
-RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Output ONLY the message text.`;
+ANTI-FABRICATION: ${substanceGuidance}
+
+RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Never say phrases like "as you mentioned", "regarding what you said about X", "circling back on your interest in Y" unless X/Y literally appears in USER MESSAGES above. Output ONLY the message text.`;
+
 
   try {
     const { retryFetch } = await import("@/lib/retry");
