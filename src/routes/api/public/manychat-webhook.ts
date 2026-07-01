@@ -658,6 +658,14 @@ async function processAndSend(
     action = { type: "none" };
   }
   let toolFinalReply = false;
+  // Remember the exact/first slot last offered to the user via check_availability
+  // so that if the AI later emits book_slot with a hallucinated ISO, we can fall
+  // back to what we actually just told them was available.
+  let offeredSlotIso: string | null =
+    (existing as unknown as { last_offered_slot_iso?: string | null } | null)
+      ?.last_offered_slot_iso
+      ? new Date((existing as unknown as { last_offered_slot_iso: string }).last_offered_slot_iso).toISOString()
+      : null;
   if (!shouldEscalate && action && action.type !== "none") {
     const ackText = pickAckText(parsedAI?.reply, data.message_text, action.type);
     if (ackText) {
