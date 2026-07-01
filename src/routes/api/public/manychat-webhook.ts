@@ -649,6 +649,12 @@ async function processAndSend(
   // continue with the real work and send the final answer as bubble #2.
   let ackSent = false;
   let action = normalizeBookingAction(parsedAI?.booking_action, parsedAI, messages, data.message_text);
+  // Code-level override: if user explicitly says "undo / wapas / wrong one /
+  // restore" right after a cancellation, force restore_booking even if the
+  // model chose otherwise.
+  if (looksLikeExplicitRestoreIntent(data.message_text, messages) && action.type !== "restore_booking") {
+    action = { type: "restore_booking" };
+  }
   // SAFETY: if the conversation is already booked, ignore accidental booking
   // actions on non-booking turns (e.g. "thanks"). BUT do not suppress a real
   // new slot / availability request. This was causing the production failure
