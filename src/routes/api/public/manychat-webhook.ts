@@ -1624,12 +1624,13 @@ function composeAvailabilityReply(summary: AvailabilitySummary, lastUserText: st
 
   if (summary.alternatives.length > 0) {
     const times = summary.alternatives.map((s) => `*${s.label}*`).join(" or ");
+    const userGaveTime = !!summary.user_stated_time && !!parseSpecificTimeLocal(summary.user_stated_time);
     return localizedText(lastUserText, {
-      roman: `${summary.user_stated_time ? "Wo exact time available nahi." : "Available slots ye hain."} ${times} ${summary.timezone} work karega?`,
-      english: `${summary.user_stated_time ? "That exact time is taken." : "Available slots:"} ${times} ${summary.timezone}. Which works?`,
-      urdu: `وہ exact time دستیاب نہیں۔ ${times} ${summary.timezone} میں سے کون سا ٹھیک ہے؟`,
-      hindi: `वो exact time available नहीं है। ${times} ${summary.timezone} में कौन सा ठीक रहेगा?`,
-      arabic: `ذلك الوقت غير متاح. ${times} ${summary.timezone} أيهما يناسبك؟`,
+      roman: `${userGaveTime ? "Wo exact time available nahi." : "Ye slots available hain."} ${times} ${summary.timezone} me se kaunsa theek rahega?`,
+      english: `${userGaveTime ? "That exact time is taken." : "Here are the next available slots:"} ${times} ${summary.timezone}. Which works for you?`,
+      urdu: `${userGaveTime ? "وہ exact time دستیاب نہیں۔" : "یہ slots دستیاب ہیں:"} ${times} ${summary.timezone} میں سے کون سا ٹھیک ہے؟`,
+      hindi: `${userGaveTime ? "वो exact time available नहीं है।" : "ये slots available हैं:"} ${times} ${summary.timezone} में कौन सा ठीक रहेगा?`,
+      arabic: `${userGaveTime ? "ذلك الوقت غير متاح." : "المواعيد المتاحة:"} ${times} ${summary.timezone} أيهما يناسبك؟`,
     });
   }
 
