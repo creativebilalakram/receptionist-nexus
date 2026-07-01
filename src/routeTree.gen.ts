@@ -23,6 +23,7 @@ import { Route as ApiPublicBookingRemindersRouteImport } from './routes/api/publ
 import { Route as AuthenticatedConversationsIdRouteImport } from './routes/_authenticated/conversations.$id'
 import { Route as AuthenticatedClientsNewRouteImport } from './routes/_authenticated/clients.new'
 import { Route as AuthenticatedClientsIdRouteImport } from './routes/_authenticated/clients.$id'
+import { Route as ApiPublicHooksWatchdogRouteImport } from './routes/api/public/hooks/watchdog'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -98,6 +99,11 @@ const AuthenticatedClientsIdRoute = AuthenticatedClientsIdRouteImport.update({
   path: '/clients/$id',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const ApiPublicHooksWatchdogRoute = ApiPublicHooksWatchdogRouteImport.update({
+  id: '/api/public/hooks/watchdog',
+  path: '/api/public/hooks/watchdog',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -113,6 +119,7 @@ export interface FileRoutesByFullPath {
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/clients/': typeof AuthenticatedClientsIndexRoute
+  '/api/public/hooks/watchdog': typeof ApiPublicHooksWatchdogRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -128,6 +135,7 @@ export interface FileRoutesByTo {
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/clients': typeof AuthenticatedClientsIndexRoute
+  '/api/public/hooks/watchdog': typeof ApiPublicHooksWatchdogRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -145,6 +153,7 @@ export interface FileRoutesById {
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/_authenticated/clients/': typeof AuthenticatedClientsIndexRoute
+  '/api/public/hooks/watchdog': typeof ApiPublicHooksWatchdogRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -162,6 +171,7 @@ export interface FileRouteTypes {
     | '/api/public/manychat-webhook'
     | '/api/public/resend-openers'
     | '/clients/'
+    | '/api/public/hooks/watchdog'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -177,6 +187,7 @@ export interface FileRouteTypes {
     | '/api/public/manychat-webhook'
     | '/api/public/resend-openers'
     | '/clients'
+    | '/api/public/hooks/watchdog'
   id:
     | '__root__'
     | '/'
@@ -193,6 +204,7 @@ export interface FileRouteTypes {
     | '/api/public/manychat-webhook'
     | '/api/public/resend-openers'
     | '/_authenticated/clients/'
+    | '/api/public/hooks/watchdog'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -203,6 +215,7 @@ export interface RootRouteChildren {
   ApiPublicFollowupsRoute: typeof ApiPublicFollowupsRoute
   ApiPublicManychatWebhookRoute: typeof ApiPublicManychatWebhookRoute
   ApiPublicResendOpenersRoute: typeof ApiPublicResendOpenersRoute
+  ApiPublicHooksWatchdogRoute: typeof ApiPublicHooksWatchdogRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -305,6 +318,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedClientsIdRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/api/public/hooks/watchdog': {
+      id: '/api/public/hooks/watchdog'
+      path: '/api/public/hooks/watchdog'
+      fullPath: '/api/public/hooks/watchdog'
+      preLoaderRoute: typeof ApiPublicHooksWatchdogRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -339,6 +359,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicFollowupsRoute: ApiPublicFollowupsRoute,
   ApiPublicManychatWebhookRoute: ApiPublicManychatWebhookRoute,
   ApiPublicResendOpenersRoute: ApiPublicResendOpenersRoute,
+  ApiPublicHooksWatchdogRoute: ApiPublicHooksWatchdogRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
