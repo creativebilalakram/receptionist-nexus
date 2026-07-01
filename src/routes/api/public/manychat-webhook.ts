@@ -949,6 +949,7 @@ async function processAndSend(
     lead_score: leadScore,
     status,
     current_stage: currentStage,
+    language: stickyLang.locked,
     last_reasoning: parsedAI?.reasoning ?? null,
     last_message_at: new Date().toISOString(),
     phone: data.phone ?? existing?.phone ?? null,
