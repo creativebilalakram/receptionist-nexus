@@ -1170,36 +1170,47 @@ async function processAndSend(
 
 
     if (modelParts.length > 0) {
-      parts = modelParts.slice(0, 3); // hard cap 3 bubbles
+      parts = modelParts.slice(0, 2); // hard cap 2 bubbles (professional brevity)
     } else {
-      parts = autoSplitReply(aiReply).filter((p) => p && p.trim().length > 0);
+      parts = autoSplitReply(aiReply).filter((p) => p && p.trim().length > 0).slice(0, 2);
     }
   }
-  // FIX 7 — dedupe bubbles. Three sources of duplicate messages we've observed:
+  // FIX 7 — dedupe bubbles. Sources of duplicate/redundant messages:
   //   (a) model emits reply_parts with two near-identical entries
   //   (b) autoSplit produces adjacent parts whose normalized text matches
-  //   (c) one of the parts matches the ack we already sent this turn, or the
-  //       previous assistant bubble in history
+  //   (c) one of the parts matches the ack we already sent this turn, or a
+  //       recent assistant bubble in history (fuzzy — Jaccard ≥ 0.6)
+  //   (d) part is a low-value restatement of what the user just said
   // Skip for the premium opener (already single-bubble by design).
   if (!isFirstEverMessage && parts.length > 0) {
     const priorAssistant: string[] = [];
-    for (let i = messages.length - 1; i >= 0 && priorAssistant.length < 3; i--) {
+    for (let i = messages.length - 1; i >= 0 && priorAssistant.length < 4; i--) {
       if (messages[i].role === "assistant") priorAssistant.push(messages[i].content);
     }
     const seen = new Set<string>();
-    // Seed with recent history so we don't re-echo the last thing we sent.
     for (const m of priorAssistant) {
       const n = normalizeForCompare(m);
       if (n) seen.add(n);
     }
     const deduped: string[] = [];
+    const isFuzzyDup = (candidate: string): boolean => {
+      for (const prev of priorAssistant) {
+        if (jaccardSimilarity(candidate, prev) >= 0.6) return true;
+      }
+      for (const kept of deduped) {
+        if (jaccardSimilarity(candidate, kept) >= 0.6) return true;
+      }
+      return false;
+    };
     for (const p of parts) {
       const n = normalizeForCompare(p);
       if (!n || seen.has(n)) continue;
+      if (isFuzzyDup(p)) continue;
       seen.add(n);
       deduped.push(p);
     }
     if (deduped.length > 0) parts = deduped;
+    parts = parts.slice(0, 2);
   }
 
   // Final guard: never send empty
@@ -2533,12 +2544,14 @@ If they book, confirm warmly and set status_change='booked'. If they're cold or 
   blocks.push(
     `TONE & FORMAT RULES (NON-NEGOTIABLE — feel like a sharp human, not a chatbot)
 
-LENGTH (critical — short = human, long = robot):
-- Default reply length: ONE short line. Sometimes two. Rarely three. Never paragraphs.
-- Aim for under ~120 characters per bubble. A real receptionist on WhatsApp types in short, punchy bursts.
-- If a thought genuinely has two beats (e.g. acknowledgement + question, or confirmation + ask), split it into TWO separate bubbles using the "reply_parts" array (see OUTPUT CONTRACT) — like a human sending two quick messages back-to-back. Max 2 bubbles normally, 3 only for the premium first-message opener.
-- When you use reply_parts, EACH bubble must stand alone (no "...continued"), and each must be 1-2 short lines.
-- One question per reply (across all bubbles combined). Never more.
+LENGTH (critical — short = professional, long = amateur):
+- DEFAULT: ONE short bubble. ONE line preferred, two lines max. This is the norm — not the exception.
+- Aim for ~80-120 characters. A sharp receptionist replies in one crisp line, not a paragraph and not a chain of bubbles.
+- reply_parts (2 bubbles) is ALLOWED ONLY when a genuine confirmation + a distinct next question exist AND both bubbles carry NEW information. If bubble 2 just rephrases bubble 1, DO NOT split — send one bubble.
+- HARD CAP: 2 bubbles maximum (3 only for the very first opener). Never 3, 4, or 5 bubbles in a normal turn.
+- NEVER restate what the user just said back to them ("Acha, aapka focus X hai" then asking a question is a WASTED bubble — go straight to the question).
+- NEVER repeat something you already sent in the last 2-3 turns. If you already asked about team size, don't ask again in a slightly different way.
+- One question per turn total (across all bubbles). Never more.
 
 STYLE:
 - Bold the 1-2 words that carry meaning using WhatsApp single-asterisk syntax: *word*. Never bold full sentences.
