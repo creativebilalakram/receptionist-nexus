@@ -447,47 +447,105 @@ async function processAndSend(
         });
       }
     } else if (action.type === "book_slot") {
-      // HARD VALIDATE the AI-proposed slot before touching the DB.
-      // The AI has been known to hallucinate year/date — reject anything
-      // that isn't a valid future ISO within max_advance_days.
+      // FIX 4 — booking-drift defense.
+      // Root cause of drift: the model sometimes emits slot_iso_utc with the
+      // wrong YEAR (training-data drift), or a stale ISO from a prior turn.
+      // Old code searched ±24h around the (possibly hallucinated) timestamp,
+      // which meant year-drift ISOs found nothing AND the recovery
+      // "alternatives" were also anchored to the wrong year.
+      //
+      // New strategy, in order:
+      //   1) exact match ±60s in a ±24h window around the proposed ISO
+      //   2) if that fails and the proposed year differs from now, coerce
+      //      the ISO to the SAME month/day/time in the current year (and
+      //      +1yr if that is in the past) and re-check
+      //   3) if still no hit, fall back to nearest real slots anchored to
+      //      NOW (never the hallucinated timestamp)
       const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
       const proposed = new Date(action.slot_iso_utc);
       const proposedMs = proposed.getTime();
       const nowMs = Date.now();
       let validatedIso: string | null = null;
+      let driftCorrected = false;
 
-      if ("error" in ctx) {
-        // Settings missing — fail soft.
-      } else if (!Number.isNaN(proposedMs) && proposedMs > nowMs - 5 * 60_000) {
-        // Try to find this exact slot (±1 min) in a freshly generated window
-        // around the proposed time. This catches both stale ISOs and
-        // hallucinated-year ISOs (which fall outside the window entirely).
-        const rs = new Date(proposedMs - 24 * 60 * 60_000);
-        const re = new Date(proposedMs + 24 * 60 * 60_000);
+      const tryMatchAround = (centerMs: number) => {
+        if ("error" in ctx) return null;
+        const rs = new Date(centerMs - 24 * 60 * 60_000);
+        const re = new Date(centerMs + 24 * 60 * 60_000);
         const slots = generateSlots(ctx, rs, re, 200);
         const hit = slots.find(
-          (s) => Math.abs(new Date(s.start).getTime() - proposedMs) < 60_000,
+          (s) => Math.abs(new Date(s.start).getTime() - centerMs) < 60_000,
         );
-        if (hit) validatedIso = hit.start;
+        return hit ? hit.start : null;
+      };
+
+      if ("error" in ctx) {
+        // Settings missing — fail soft below.
+      } else if (!Number.isNaN(proposedMs) && proposedMs > nowMs - 5 * 60_000) {
+        // (1) direct match
+        validatedIso = tryMatchAround(proposedMs);
+
+        // (2) year-drift correction
+        if (!validatedIso) {
+          const proposedYear = proposed.getUTCFullYear();
+          const currentYear = new Date(nowMs).getUTCFullYear();
+          if (proposedYear !== currentYear) {
+            const corrected = new Date(Date.UTC(
+              currentYear,
+              proposed.getUTCMonth(),
+              proposed.getUTCDate(),
+              proposed.getUTCHours(),
+              proposed.getUTCMinutes(),
+              proposed.getUTCSeconds(),
+            ));
+            // If that date is already in the past, roll forward one year.
+            if (corrected.getTime() < nowMs - 5 * 60_000) {
+              corrected.setUTCFullYear(currentYear + 1);
+            }
+            const hit = tryMatchAround(corrected.getTime());
+            if (hit) {
+              validatedIso = hit;
+              driftCorrected = true;
+              await supabaseAdmin.from("webhook_logs").insert({
+                client_id: client.id,
+                direction: "outbound",
+                payload: {
+                  kind: "book_slot_year_drift_corrected",
+                  original_iso: action.slot_iso_utc,
+                  corrected_iso: hit,
+                } as unknown as Json,
+                status_code: 200,
+              });
+            }
+          }
+        }
       }
 
       if (!validatedIso && !("error" in ctx)) {
-        // STRICT: do NOT silently book a different time than what the user asked for.
-        // If the proposed ISO isn't a real slot, compose an availability-style
-        // reply offering the nearest 1-2 REAL slots so the user can confirm.
+        // (3) recovery — anchor to NOW, never to the hallucinated ISO.
         const tz = ctx.timezone;
-        const anchorMs = !Number.isNaN(proposedMs) ? proposedMs : Date.now();
-        const rs = new Date(anchorMs - 24 * 60 * 60_000);
-        const re = new Date(anchorMs + 24 * 60 * 60_000);
+        const anchorMs = nowMs;
+        const rs = new Date(anchorMs);
+        const re = new Date(anchorMs + 7 * 24 * 60 * 60_000);
         const slots = generateSlots(ctx, rs, re, 200);
-        const dayYmd = !Number.isNaN(proposedMs) ? localYmdInTz(new Date(proposedMs), tz) : null;
-        const sameDay = dayYmd ? slots.filter((s) => localYmdInTz(new Date(s.start), tz) === dayYmd) : slots;
+        // Prefer slots on the day the user seemed to want (using proposed
+        // month/day mapped into current year), else earliest available.
+        let sameDay: typeof slots = [];
+        if (!Number.isNaN(proposedMs)) {
+          const wantYmd = localYmdInTz(
+            new Date(Date.UTC(
+              new Date(anchorMs).getUTCFullYear(),
+              proposed.getUTCMonth(),
+              proposed.getUTCDate(),
+            )),
+            tz,
+          );
+          sameDay = slots.filter((s) => localYmdInTz(new Date(s.start), tz) === wantYmd);
+        }
         const pool = sameDay.length ? sameDay : slots;
         const alternatives = pool
-          .map((s) => ({ s, d: Math.abs(new Date(s.start).getTime() - anchorMs) }))
-          .sort((a, b) => a.d - b.d)
           .slice(0, 2)
-          .map((x) => ({ start: x.s.start, label: x.s.label }));
+          .map((s) => ({ start: s.start, label: s.label }));
 
         aiReply = composeAvailabilityReply(
           {
@@ -511,11 +569,14 @@ async function processAndSend(
           } as unknown as Json,
           status_code: 200,
         });
-      } else {
+      }
+      void driftCorrected;
+
+      if (validatedIso) {
         const result = await bookAppointment(supabaseAdmin, {
           clientId: client.id,
           meetingTypeId: null,
-          startIso: validatedIso!,
+          startIso: validatedIso,
           contactName: data.first_name ?? null,
           contactPhone: data.phone ?? null,
           contactEmail: action.contact_email ?? null,
