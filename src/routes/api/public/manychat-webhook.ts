@@ -1503,32 +1503,64 @@ async function draftBookingReply(
 function pickAckText(
   aiFirstPass: string | undefined,
   lastUserText: string,
-  actionType: "check_availability" | "book_slot",
+  actionType: "check_availability" | "book_slot" | "list_bookings" | "cancel_booking" | "reschedule_booking",
 ): string {
   const candidate = (aiFirstPass ?? "").trim();
   // Use AI's holding phrase only if it's genuinely short (< 90 chars, 1 line).
   if (candidate && candidate.length <= 90 && !candidate.includes("\n")) {
     return candidate;
   }
-  // Detect script / language from the last user message.
   const t = lastUserText ?? "";
-  if (/[\u0600-\u06FF]/.test(t)) {
-    return actionType === "book_slot" ? "ایک سیکنڈ، بُک کر رہا ہوں…" : "ایک سیکنڈ، چیک کرتا ہوں…";
-  }
-  if (/[\u0900-\u097F]/.test(t)) {
-    return actionType === "book_slot" ? "एक सेकंड, बुक कर रहा हूँ…" : "एक सेकंड, चेक करता हूँ…";
-  }
-  if (/[\u0621-\u064A]/.test(t)) {
-    return actionType === "book_slot" ? "لحظة، أحجز لك الآن…" : "لحظة، أتحقق لك…";
-  }
-  // Roman Urdu heuristic
+  const verbFor = (
+    lang: "roman" | "english" | "urdu" | "hindi" | "arabic",
+  ): string => {
+    const map: Record<typeof lang, Record<typeof actionType, string>> = {
+      roman: {
+        check_availability: "ek sec, *check* karta hun…",
+        book_slot: "ek sec, *book* kar raha hun…",
+        list_bookings: "ek sec, *bookings* nikaal raha hun…",
+        cancel_booking: "ek sec, *cancel* kar raha hun…",
+        reschedule_booking: "ek sec, *reschedule* kar raha hun…",
+      },
+      english: {
+        check_availability: "one sec, let me *check*…",
+        book_slot: "one sec, *booking* it now…",
+        list_bookings: "one sec, pulling up your *bookings*…",
+        cancel_booking: "one sec, *cancelling* now…",
+        reschedule_booking: "one sec, *rescheduling* now…",
+      },
+      urdu: {
+        check_availability: "ایک سیکنڈ، چیک کرتا ہوں…",
+        book_slot: "ایک سیکنڈ، بُک کر رہا ہوں…",
+        list_bookings: "ایک سیکنڈ، آپ کی bookings دیکھتا ہوں…",
+        cancel_booking: "ایک سیکنڈ، cancel کر رہا ہوں…",
+        reschedule_booking: "ایک سیکنڈ، reschedule کر رہا ہوں…",
+      },
+      hindi: {
+        check_availability: "एक सेकंड, चेक करता हूँ…",
+        book_slot: "एक सेकंड, बुक कर रहा हूँ…",
+        list_bookings: "एक सेकंड, आपकी bookings देखता हूँ…",
+        cancel_booking: "एक सेकंड, cancel कर रहा हूँ…",
+        reschedule_booking: "एक सेकंड, reschedule कर रहा हूँ…",
+      },
+      arabic: {
+        check_availability: "لحظة، أتحقق لك…",
+        book_slot: "لحظة، أحجز لك الآن…",
+        list_bookings: "لحظة، أجلب حجوزاتك…",
+        cancel_booking: "لحظة، ألغي الحجز الآن…",
+        reschedule_booking: "لحظة، أعيد الجدولة الآن…",
+      },
+    };
+    return map[lang][actionType];
+  };
+  if (/[\u0600-\u06FF]/.test(t)) return verbFor("urdu");
+  if (/[\u0900-\u097F]/.test(t)) return verbFor("hindi");
+  if (/[\u0621-\u064A]/.test(t)) return verbFor("arabic");
   const lower = t.toLowerCase();
   const romanHits = ["kya", "ka ", "ko ", " ma ", " ha ", "kar", "mujh", "mera", "kasa", "btao", "thora", "abi", "nahi"]
     .filter((w) => lower.includes(w)).length;
-  if (romanHits >= 2) {
-    return actionType === "book_slot" ? "ek sec, *book* kar raha hun…" : "ek sec, *check* karta hun…";
-  }
-  return actionType === "book_slot" ? "one sec, *booking* it now…" : "one sec, let me *check*…";
+  if (romanHits >= 2) return verbFor("roman");
+  return verbFor("english");
 }
 
 /**
