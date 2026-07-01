@@ -734,6 +734,10 @@ async function processAndSend(
           window_empty: pool.length === 0,
         };
 
+        // Remember what we just offered so a follow-up book_slot with a bad
+        // ISO can be recovered to the exact slot the user actually saw.
+        offeredSlotIso = exactSlot?.start ?? alternatives[0]?.start ?? offeredSlotIso;
+
         // Production reliability: do not wait on a second AI call for slot copy.
         // The backend already knows the truth; compose the final useful reply deterministically.
         aiReply = composeAvailabilityReply(availability, data.message_text);
