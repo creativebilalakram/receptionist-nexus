@@ -169,6 +169,68 @@ function detectLangHint(text: string): "en" | "ur" | "ar" {
   }
   return "en";
 }
+
+// FIX 13 — LANGUAGE MIRRORING (sticky per conversation)
+// Fine-grained detector used for the sticky-lang decision. Distinguishes
+// Roman Urdu / Hindi from plain English so the AI stops randomly switching
+// to formal English mid-thread when the user is clearly typing Roman Urdu.
+type LangCode = "en" | "ur-roman" | "ur-script" | "hi-script" | "ar";
+const ROMAN_URDU_TOKENS = /\b(hai|hain|hoon|hun|ho|nahi|nahin|nai|kya|kyun|kyu|kaise|kaisay|kasa|kese|ap|aap|apka|apki|mujhe|muja|mera|meri|meray|karo|kro|krna|karna|kar|krta|krti|krte|karta|karti|karte|dena|dedo|dedena|bhej|bhejo|batao|bata|bta|batadein|acha|accha|theek|thk|thik|sahi|sahi|zaroor|zarur|abhi|filhal|matlab|price|paisa|paise|paisay|banda|insaan|mein|mai|humare|hamare|hamara|humara|shukriya|shukria|meherbani|dekhta|dekhti|dekh|chahiye|chahye|chaiye|chahye|hoga|hogi|hongay|hogaya|hogayi|banao|bnao|karega|karegi|kro na|krdo|krdena|salon|dukan|clinic)\b/;
+function detectLangFine(text: string): LangCode {
+  if (!text) return "en";
+  // Devanagari (Hindi) script
+  if (/[\u0900-\u097F]/.test(text)) return "hi-script";
+  // Arabic script — differentiate Arabic vs Urdu-script.
+  if (/[\u0600-\u06FF]/.test(text)) {
+    // Urdu-specific letters that don't appear in modern standard Arabic
+    if (/[\u0679\u067E\u0686\u0688\u0691\u0698\u06A9\u06AF\u06BA\u06BE\u06C1\u06CC\u06D2]/.test(text)) {
+      return "ur-script";
+    }
+    // Common Arabic function words / definite article
+    if (/(^|\s)(ال|في|من|على|هذا|هذه|أن|إلى|هل|كيف|ماذا|لا|نعم)(\s|$)/.test(text)) return "ar";
+    return "ur-script";
+  }
+  const roman = normalizeForMatch(text);
+  if (ROMAN_URDU_TOKENS.test(roman)) return "ur-roman";
+  return "en";
+}
+function langLabel(l: LangCode): string {
+  switch (l) {
+    case "ur-roman": return "Roman Urdu / Roman Hindi (Latin script, e.g. \"kya price hai\")";
+    case "ur-script": return "Urdu (اردو script)";
+    case "hi-script": return "Hindi (देवनागरी script)";
+    case "ar": return "Arabic (العربية)";
+    default: return "English";
+  }
+}
+// Decide the LOCKED language for this conversation. Rules:
+//   • First user message → lock to whatever they typed.
+//   • Once locked, only switch if EITHER
+//       (a) the current message is a hard script switch (Urdu / Hindi /
+//           Arabic script when we were locked to English or Roman Urdu, or
+//           vice versa), OR
+//       (b) both of the user's last two messages (including the current)
+//           agree on the new language — a single English word inside a
+//           Roman Urdu thread must NOT flip the lock.
+function resolveStickyLanguage(
+  previousLocked: LangCode | null,
+  currentText: string,
+  priorUserMessages: string[],
+): { locked: LangCode; detected: LangCode; switched: boolean } {
+  const detected = detectLangFine(currentText);
+  if (!previousLocked) return { locked: detected, detected, switched: false };
+  if (detected === previousLocked) return { locked: previousLocked, detected, switched: false };
+  const isScriptSwitch =
+    (["ur-script", "hi-script", "ar"] as LangCode[]).includes(detected) ||
+    (["ur-script", "hi-script", "ar"] as LangCode[]).includes(previousLocked);
+  if (isScriptSwitch) return { locked: detected, detected, switched: true };
+  // Latin-script ambiguity (en ↔ ur-roman). Require the prior user message
+  // to also be in the new language before flipping the lock.
+  const lastPrior = [...priorUserMessages].reverse().find((t) => (t ?? "").trim().length > 0) ?? "";
+  const priorDetected = detectLangFine(lastPrior);
+  if (priorDetected === detected) return { locked: detected, detected, switched: true };
+  return { locked: previousLocked, detected, switched: false };
+}
 function handoffMessage(firstName: string | null, lang: "en" | "ur" | "ar"): string {
   const name = firstName ? `, ${firstName}` : "";
   if (lang === "ur") {
@@ -393,6 +455,20 @@ async function processAndSend(
   let status = existing?.status ?? "active";
   let currentStage: Stage = ((existing?.current_stage as Stage | undefined) ?? "open");
 
+  // FIX 13 — sticky per-conversation language lock. Prevents the AI from
+  // randomly switching to formal English when the user is typing Roman Urdu.
+  const priorUserTexts = messages
+    .slice(0, -1)
+    .filter((m) => m.role === "user")
+    .map((m) => m.content);
+  const previousLocked =
+    (["en", "ur-roman", "ur-script", "hi-script", "ar"] as const).includes(
+      ((existing as unknown as { language?: string })?.language as LangCode) ?? "__",
+    )
+      ? (((existing as unknown as { language?: string })?.language as LangCode))
+      : null;
+  const stickyLang = resolveStickyLanguage(previousLocked, data.message_text, priorUserTexts);
+
   if (!existing) {
     const { data: newRow, error: insErr } = await supabaseAdmin.from("conversations").insert({
       client_id: client.id,
@@ -402,6 +478,7 @@ async function processAndSend(
       messages: messages as unknown as Json,
       last_message_at: nowIso,
       current_stage: "open",
+      language: stickyLang.locked,
     }).select("id").single();
     if (insErr || !newRow) {
       console.error("[processAndSend] convo insert failed:", insErr);
@@ -451,7 +528,7 @@ async function processAndSend(
   }
 
   const isFirstEverMessage = priorMessageCount === 0;
-  const systemPrompt = buildSystemPrompt(client, data.first_name ?? null, isFirstEverMessage);
+  const systemPrompt = buildSystemPrompt(client, data.first_name ?? null, isFirstEverMessage, stickyLang.locked);
   const aiMessages = [
     { role: "system" as const, content: systemPrompt },
     ...messages.map((m) => ({
@@ -872,6 +949,7 @@ async function processAndSend(
     lead_score: leadScore,
     status,
     current_stage: currentStage,
+    language: stickyLang.locked,
     last_reasoning: parsedAI?.reasoning ?? null,
     last_message_at: new Date().toISOString(),
     phone: data.phone ?? existing?.phone ?? null,
@@ -1596,7 +1674,7 @@ function scrubImaginaryOffers(text: string): string {
 
 
 
-function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
+function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean, lockedLang: LangCode = "en"): string {
   const blocks: string[] = [];
   const tz = client.timezone || "UTC";
   const now = new Date();
@@ -1614,6 +1692,30 @@ function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstE
 Right now it is: ${todayLocal} (${tz}).
 Today's date is ${todayYmd}.
 When the user says "tomorrow", "kal", "next week", etc., resolve relative to THIS date — never to any other year. ALL slot_iso_utc values you emit MUST be on or after today.`
+  );
+
+  // BLOCK 0B — LOCKED LANGUAGE (FIX 13)
+  // The conversation is locked to the language the user opened in. Do NOT
+  // drift to formal English mid-thread just because the user borrowed one
+  // English word (words like "price", "demo", "email", "salon", "booking"
+  // are normal loanwords inside Roman Urdu — they are NOT a language switch).
+  blocks.push(
+    `LOCKED CONVERSATION LANGUAGE (FIX 13 — sticky, do NOT drift)
+This conversation is locked to: ${langLabel(lockedLang)}.
+Every reply — including tool-result replies, confirmations, error recoveries,
+and clarifying questions — MUST be written in ${langLabel(lockedLang)}.
+${lockedLang === "ur-roman" ? `- Reply in Roman Urdu (Latin script), NOT Urdu script and NOT formal English.
+- Loanwords like "price", "demo", "email", "booking", "slot", "salon", "clinic", "PKT" stay in English inside Roman Urdu — that is natural, keep going in Roman Urdu.
+- Never respond in a paragraph of formal English just because the user asked a factual question. Answer the same question in Roman Urdu.
+- Example: user asks "price kya hai?" → reply in Roman Urdu ("*price* aap ke use case pe depend karti hai — 2 min ki quick call laga lein?"), NOT "Our pricing depends on...".` : ""}
+${lockedLang === "ur-script" ? "- Reply in Urdu script (اردو). Do not switch to Roman Urdu or English." : ""}
+${lockedLang === "hi-script" ? "- Reply in Hindi (देवनागरी script). Do not switch to Roman Hindi or English." : ""}
+${lockedLang === "ar" ? "- Reply in Arabic (العربية). Do not switch to English." : ""}
+${lockedLang === "en" ? "- Reply in natural English. Do not switch to Urdu/Roman Urdu unless the user's LATEST message is clearly in that language." : ""}
+The only situation in which you may switch languages is when the user's LATEST
+message is UNAMBIGUOUSLY in a different language (e.g. a full sentence in
+Urdu/Arabic script, or several clear Roman-Urdu sentences in a row). A single
+foreign word or English loanword inside their sentence is NOT a language switch.`
   );
 
   // BLOCK 1 — IDENTITY & ROLE

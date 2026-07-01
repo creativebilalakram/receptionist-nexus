@@ -315,6 +315,7 @@ export type Database = {
           followup_count: number
           followup_sent_at: string | null
           id: string
+          language: string | null
           last_message_at: string | null
           last_reasoning: string | null
           lead_score: number
@@ -336,6 +337,7 @@ export type Database = {
           followup_count?: number
           followup_sent_at?: string | null
           id?: string
+          language?: string | null
           last_message_at?: string | null
           last_reasoning?: string | null
           lead_score?: number
@@ -357,6 +359,7 @@ export type Database = {
           followup_count?: number
           followup_sent_at?: string | null
           id?: string
+          language?: string | null
           last_message_at?: string | null
           last_reasoning?: string | null
           lead_score?: number
