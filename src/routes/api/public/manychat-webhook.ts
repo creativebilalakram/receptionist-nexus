@@ -2024,6 +2024,13 @@ STRICT TOOL NAME RULE:
 - NEVER invent tool names like "get_slots", "show_slots", "availability", or "confirm_booking".`
   );
 
+  // BLOCK 8B — RUNTIME FACTS (FIX 15B and future dynamic hints)
+  // Injected only when the code layer detects a runtime condition the AI
+  // must react to (e.g. exact-repeat message, stuck-flow recovery).
+  if (runtimeFacts && runtimeFacts.trim()) {
+    blocks.push(`RUNTIME FACTS (dynamic — apply these to THIS turn only):\n${runtimeFacts.trim()}`);
+  }
+
   return blocks.join("\n\n");
 }
 
