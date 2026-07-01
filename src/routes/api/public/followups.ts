@@ -94,13 +94,18 @@ export const Route = createFileRoute("/api/public/followups")({
           const mcKey = settings?.manychat_api_key ?? process.env.MANYCHAT_API_KEY ?? null;
           if (!mcKey) { skipped.push({ id: c.id, reason: "no_manychat_key" }); continue; }
 
-          const followup = await generateFollowup({
+          const cleanFirstName = sanitizeFirstName(c.first_name);
+          const attemptNumber = (c.followup_count ?? 0) + 1;
+
+          const followupRaw = await generateFollowup({
             client,
-            firstName: c.first_name,
+            firstName: cleanFirstName,
             messages,
             stage: c.current_stage,
+            attempt: attemptNumber,
           });
-          if (!followup) { skipped.push({ id: c.id, reason: "ai_failed" }); continue; }
+          const followup = followupRaw ? dedupAgainstHistory(followupRaw, messages) : null;
+          if (!followup) { skipped.push({ id: c.id, reason: "ai_failed_or_duplicate" }); continue; }
 
           // Send via ManyChat using the client-specific key if available
           const res = await sendWhatsAppText(c.subscriber_id, followup);
@@ -108,14 +113,14 @@ export const Route = createFileRoute("/api/public/followups")({
             await supabaseAdmin.from("webhook_logs").insert({
               client_id: c.client_id,
               direction: "outbound",
-              payload: { followup, subscriber_id: c.subscriber_id, error: res.error } as any,
+              payload: { followup, subscriber_id: c.subscriber_id, error: res.error, attempt: attemptNumber } as any,
               status_code: res.status,
             });
             skipped.push({ id: c.id, reason: `send_${res.status}` });
             continue;
           }
 
-          // Append to messages, mark followup_sent_at
+          // Append to messages, mark followup_sent_at + bump count
           const newMessages = [
             ...messages,
             { role: "assistant" as const, content: followup, timestamp: new Date().toISOString() },
@@ -123,17 +128,19 @@ export const Route = createFileRoute("/api/public/followups")({
           await supabaseAdmin.from("conversations").update({
             messages: newMessages as any,
             followup_sent_at: new Date().toISOString(),
+            followup_count: attemptNumber,
             last_message_at: new Date().toISOString(),
           }).eq("id", c.id);
 
           await supabaseAdmin.from("webhook_logs").insert({
             client_id: c.client_id,
             direction: "outbound",
-            payload: { followup, subscriber_id: c.subscriber_id, kind: "auto_followup" } as any,
+            payload: { followup, subscriber_id: c.subscriber_id, kind: "auto_followup", attempt: attemptNumber } as any,
             status_code: res.status,
           });
 
           sent.push({ id: c.id, status: res.status });
+
         }
 
         return Response.json({ ok: true, checked: candidates?.length ?? 0, sent, skipped });
