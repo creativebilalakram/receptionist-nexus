@@ -1293,6 +1293,38 @@ function delistReplyText(text: string): string {
   return (kept ? kept + " " : "") + prose;
 }
 
+/**
+ * FIX 10 — Scrub imaginary deliverable offers.
+ *
+ * The bot has been caught offering things it cannot actually send: demo
+ * videos, PDFs, brochures, decks, case studies, screenshots, recordings,
+ * walkthroughs, samples. None of those exist as artifacts in this system —
+ * the only thing we can legitimately share is the *booking_link* and, once
+ * booked, a calendar invite. Offering anything else breaks trust the moment
+ * the user says "haan bhejo" and nothing arrives.
+ *
+ * This pass drops any sentence that promises to send/share such a deliverable
+ * (English + Roman Urdu). If the entire reply was one such sentence, it is
+ * replaced with a safe generic re-open so we don't ship an empty bubble.
+ */
+const IMAGINARY_ARTIFACT_RE = /(video|videos|pdf|pdfs|brochure|deck|slide\s?deck|slides|screenshot|screen\s?shot|case[\s-]?stud(?:y|ies)|recording|walk[\s-]?through(?:\s+video)?|sample|portfolio\s+file|attachment|attach)/i;
+const SEND_VERB_RE = /(send|share|forward|attach|drop|deliver|email|whatsapp\s+you|bhej\w*|forwar\w*|share\s+kar\w*|send\s+kar\w*|bhej\s*d\w*|arsalna|أرسل|ارسل|ابعث)/i;
+
+function scrubImaginaryOffers(text: string): string {
+  if (!text) return text;
+  // Split into sentences while preserving line breaks.
+  const chunks = text.split(/(?<=[.!?…])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const kept = chunks.filter((s) => {
+    // Drop if the sentence both mentions a deliverable AND a send verb.
+    return !(IMAGINARY_ARTIFACT_RE.test(s) && SEND_VERB_RE.test(s));
+  });
+  if (kept.length === 0) return "";
+  return kept.join(" ");
+}
+
+
+
+
 
 
 
