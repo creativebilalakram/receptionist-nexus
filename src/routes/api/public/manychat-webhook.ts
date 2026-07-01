@@ -1103,7 +1103,6 @@ async function processAndSend(
         }
       }
     }
-    }
   }
   // Mark that an ack was already pushed so the final send skips re-sending it.
   void ackSent;
