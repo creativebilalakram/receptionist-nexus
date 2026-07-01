@@ -395,22 +395,30 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           return ackStop();
         }
 
-        // IMPORTANT: Do the Send API push in-request. The previous fire-and-forget
-        // path could be killed by the production runtime after the 200 ack, leaving
-        // an inbound log but no outbound WhatsApp message.
-        try {
-          await processAndSend(supabaseAdmin, client as ClientRow & { id: string }, data, existing ?? null);
-        } catch (err) {
-          console.error("[manychat-webhook] processAndSend failed:", err);
-          await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id, direction: "outbound",
-            payload: { error: "processAndSend_threw" } as unknown as Json,
-            response: { message: err instanceof Error ? err.message : String(err) } as Json,
-            status_code: 500,
-          });
-        }
+        // Ack ManyChat within its ~10s webhook timeout, then continue the
+        // AI + tool loop in the background via Cloudflare `ctx.waitUntil`
+        // (see src/lib/cf-context.ts). Awaiting processAndSend in-request
+        // meant that once ManyChat hung up at 10s, the runtime could tear
+        // down the invocation mid-flight — leaving the ack bubble sent but
+        // no final reply (matches the reported symptom: "Let me check
+        // availability…" then silence).
+        const { runAfterResponse } = await import("@/lib/cf-context");
+        runAfterResponse((async () => {
+          try {
+            await processAndSend(supabaseAdmin, client as ClientRow & { id: string }, data, existing ?? null);
+          } catch (err) {
+            console.error("[manychat-webhook] processAndSend failed:", err);
+            await supabaseAdmin.from("webhook_logs").insert({
+              client_id: client.id, direction: "outbound",
+              payload: { error: "processAndSend_threw" } as unknown as Json,
+              response: { message: err instanceof Error ? err.message : String(err) } as Json,
+              status_code: 500,
+            });
+          }
+        })());
 
         return ackEmpty();
+
       },
     },
   },
