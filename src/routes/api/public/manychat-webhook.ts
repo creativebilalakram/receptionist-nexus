@@ -985,6 +985,9 @@ async function processAndSend(
       : {}),
   }).eq("id", convoId!);
 
+  // FIX 14 Layer 1 — final reply is ready, cancel the 25s watchdog before send.
+  clearWatchdog();
+
   // Push to user via ManyChat Send API as multiple human-like bubbles.
   const sendRes = parts.length > 1
     ? await sendWhatsAppTextParts(data.subscriber_id, parts)
