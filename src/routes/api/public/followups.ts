@@ -149,11 +149,40 @@ export const Route = createFileRoute("/api/public/followups")({
   },
 });
 
+function sanitizeFirstName(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const t = String(name).trim();
+  if (!t) return null;
+  // Unresolved ManyChat placeholders (e.g. "{{first_name}}", "First Name", "n/a")
+  if (/[{}]/.test(t)) return null;
+  if (/^(first[ _-]?name|full[ _-]?name|n\/?a|null|undefined|user)$/i.test(t)) return null;
+  return t;
+}
+
+function normalizeForCompare(s: string): string {
+  return s.toLowerCase().replace(/[*_`~]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function dedupAgainstHistory(candidate: string, history: Msg[]): string | null {
+  const cand = normalizeForCompare(candidate);
+  if (!cand) return null;
+  const lastAssistants = history.filter((m) => m.role === "assistant").slice(-3);
+  for (const m of lastAssistants) {
+    const prev = normalizeForCompare(m.content ?? "");
+    if (!prev) continue;
+    if (prev === cand) return null;
+    // If ≥85% of candidate is a substring of a prior message, treat as duplicate
+    if (prev.length > 20 && cand.length > 20 && (prev.includes(cand) || cand.includes(prev))) return null;
+  }
+  return candidate;
+}
+
 async function generateFollowup(args: {
   client: { business_name: string; niche: string | null; services: string | null; icp: string | null; tone_notes: string | null; faq: string | null; booking_link: string | null };
   firstName: string | null;
   messages: Msg[];
   stage: string | null;
+  attempt: number;
 }): Promise<string | null> {
   const aiKey = process.env.OPENAI_API_KEY;
   if (!aiKey) return null;
@@ -163,19 +192,25 @@ async function generateFollowup(args: {
     `${m.role === "user" ? "USER" : "AI"}: ${m.content}`
   ).join("\n");
 
+  const attemptGuidance = args.attempt <= 1
+    ? "This is the FIRST follow-up. Warm, curious, low pressure. Reference something specific they said."
+    : `This is follow-up #${args.attempt}. Take a DIFFERENT angle than any prior message — new hook, new question. Do NOT repeat earlier phrasing. Acknowledge time has passed, keep it light, no guilt-trip.`;
+
   const system = `You are the WhatsApp receptionist for *${args.client.business_name}*. The lead went silent. Write ONE warm, human, personalized follow-up.
 
 BUSINESS: ${args.client.business_name}${args.client.niche ? ` — ${args.client.niche}` : ""}
 SERVICES: ${args.client.services ?? "(unspecified)"}
 IDEAL CUSTOMER: ${args.client.icp ?? "(unspecified)"}
 TONE: ${args.client.tone_notes ?? "friendly, professional, concise"}
-LEAD NAME: ${args.firstName ?? "(unknown)"}
+LEAD NAME: ${args.firstName ?? "(unknown — do NOT invent one, do NOT write placeholders like 'First Name')"}
 STAGE WHEN THEY DROPPED: ${args.stage ?? "open"}
+
+${attemptGuidance}
 
 CONVERSATION SO FAR:
 ${transcript}
 
-RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings. Reference something specific they said. End with ONE soft question. Output ONLY the message text.`;
+RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Output ONLY the message text.`;
 
   try {
     const { retryFetch } = await import("@/lib/retry");
@@ -194,11 +229,14 @@ RULES: mirror their language/script. 1–3 short lines. *bold* key words. No das
     const json: any = await resp.json().catch(() => null);
     const text = json?.choices?.[0]?.message?.content;
     if (typeof text !== "string") return null;
-    const cleaned = text.trim().replace(/^"+|"+$/g, "").replace(/^```[\s\S]*?\n|```$/g, "").trim();
+    let cleaned = text.trim().replace(/^"+|"+$/g, "").replace(/^```[\s\S]*?\n|```$/g, "").trim();
     // Strip dash separator lines if AI slips
-    const noDashes = cleaned.split("\n").filter((l) => !/^-{3,}$/.test(l.trim())).join("\n").trim();
-    return noDashes.length > 0 && noDashes.length < 700 ? noDashes : null;
+    cleaned = cleaned.split("\n").filter((l) => !/^-{3,}$/.test(l.trim())).join("\n").trim();
+    // Scrub unresolved placeholders that might leak into the reply
+    cleaned = cleaned.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
+    return cleaned.length > 0 && cleaned.length < 700 ? cleaned : null;
   } catch {
     return null;
   }
 }
+
