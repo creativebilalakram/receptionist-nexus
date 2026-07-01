@@ -528,7 +528,7 @@ async function processAndSend(
   }
 
   const isFirstEverMessage = priorMessageCount === 0;
-  const systemPrompt = buildSystemPrompt(client, data.first_name ?? null, isFirstEverMessage);
+  const systemPrompt = buildSystemPrompt(client, data.first_name ?? null, isFirstEverMessage, stickyLang.locked);
   const aiMessages = [
     { role: "system" as const, content: systemPrompt },
     ...messages.map((m) => ({
