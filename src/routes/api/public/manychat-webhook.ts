@@ -1130,6 +1130,7 @@ async function processAndSend(
 
 
   aiReply = sanitizeReplyText(aiReply);
+  aiReply = stripRoboticFillers(aiReply, data.message_text);
 
   // FIX 2: if the sanitizer stripped a JSON-only payload down to nothing,
   // fall back to a safe localized filler instead of shipping an empty bubble
@@ -1491,13 +1492,21 @@ function looksLikeExplicitBookingTurn(text: string, messages: Msg[]): boolean {
   if (looksLikeAvailabilityAsk(t)) return true;
   if (parseSpecificTimeLocal(t)) return true;
 
-  const hasBookingVerb = /\b(book|booking|appointment|demo|schedule|schedul|reschedule|cancel|lock|confirm|reserve|pakka|fix|set)\b/.test(t)
-    || /\b(book\s*kar|lock\s*kar|confirm\s*kar|kar\s*do|kr\s*do|kar\s*dun|kr\s*dun)\b/.test(t);
-  if (hasBookingVerb) return true;
+  // HARD action verbs — unambiguous intent to lock/change a slot.
+  const hardActionVerb = /\b(book|booking|reschedule|cancel|lock|confirm|reserve|pakka)\b/.test(t)
+    || /\b(book\s*kar|lock\s*kar|confirm\s*kar|kar\s*do|kr\s*do|kar\s*dun|kr\s*dun|kardo|krdo|kardun|krdun)\b/.test(t);
+  if (hardActionVerb) return true;
 
-  const dateish = /\b(today|tomorrow|tmrw|kal|aaj|sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?)\b/.test(t);
+  const dateish = /\b(today|tomorrow|tmrw|kal|aaj|parso|sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th))\b/.test(t);
   const timeish = /\b(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*(?:am|pm)\b|\b(?:[01]?\d|2[0-3]):[0-5]\d\b/.test(t);
   if (dateish && timeish) return true;
+
+  // SOFT nouns ("demo", "appointment", "meeting", "schedule") do NOT trigger
+  // a booking flow on their own — "demo dy sakte hen?" is a capability question,
+  // not a slot request. They only count when the user pairs them with a date,
+  // time, or explicit availability/scheduling ask.
+  const softNoun = /\b(demo|appointment|meeting|schedule|schedul|slot|slots)\b/.test(t);
+  if (softNoun && (dateish || timeish)) return true;
 
   const affirmative = /^(yes|yep|yeah|ok|okay|sure|confirm|confirmed|lock|book|done|haan|han|ha|jee|ji|theek|thk|sahi|kar do|kr do|kardo|krdo)\b/.test(t.trim());
   if (affirmative) {
@@ -1616,12 +1625,13 @@ function composeAvailabilityReply(summary: AvailabilitySummary, lastUserText: st
 
   if (summary.alternatives.length > 0) {
     const times = summary.alternatives.map((s) => `*${s.label}*`).join(" or ");
+    const userGaveTime = !!summary.user_stated_time && !!parseSpecificTimeLocal(summary.user_stated_time);
     return localizedText(lastUserText, {
-      roman: `${summary.user_stated_time ? "Wo exact time available nahi." : "Available slots ye hain."} ${times} ${summary.timezone} work karega?`,
-      english: `${summary.user_stated_time ? "That exact time is taken." : "Available slots:"} ${times} ${summary.timezone}. Which works?`,
-      urdu: `وہ exact time دستیاب نہیں۔ ${times} ${summary.timezone} میں سے کون سا ٹھیک ہے؟`,
-      hindi: `वो exact time available नहीं है। ${times} ${summary.timezone} में कौन सा ठीक रहेगा?`,
-      arabic: `ذلك الوقت غير متاح. ${times} ${summary.timezone} أيهما يناسبك؟`,
+      roman: `${userGaveTime ? "Wo exact time available nahi." : "Ye slots available hain."} ${times} ${summary.timezone} me se kaunsa theek rahega?`,
+      english: `${userGaveTime ? "That exact time is taken." : "Here are the next available slots:"} ${times} ${summary.timezone}. Which works for you?`,
+      urdu: `${userGaveTime ? "وہ exact time دستیاب نہیں۔" : "یہ slots دستیاب ہیں:"} ${times} ${summary.timezone} میں سے کون سا ٹھیک ہے؟`,
+      hindi: `${userGaveTime ? "वो exact time available नहीं है।" : "ये slots available हैं:"} ${times} ${summary.timezone} में कौन सा ठीक रहेगा?`,
+      arabic: `${userGaveTime ? "ذلك الوقت غير متاح." : "المواعيد المتاحة:"} ${times} ${summary.timezone} أيهما يناسبك؟`,
     });
   }
 
@@ -2280,6 +2290,55 @@ function mediaMarkerText(m: InboundMedia): string {
     case "file":  return `[user sent a file${m.url ? `: ${m.url}` : ""}]`;
     case "link":  return `[user shared a link${m.url ? `: ${m.url}` : ""}]`;
   }
+}
+
+
+/**
+ * Strip generic robotic English fillers that leak past the system prompt.
+ * Especially harmful for Pakistani/Urdu-speaking audiences where lines like
+ * "How can I assist you today?" or "Absolutely, we can schedule a demo for you"
+ * feel like a corporate call-center bot instead of a helpful receptionist.
+ * We surgically remove the filler; if the whole reply WAS the filler, we
+ * substitute a warm, language-mirrored opener so we never ship an empty bubble.
+ */
+function stripRoboticFillers(text: string, lastUserText: string): string {
+  if (!text) return text;
+  let out = text;
+
+  // Sentence-level bans: match at start of any sentence.
+  const bannedSentencePatterns: RegExp[] = [
+    /(^|[\.\!\?\n]\s*)how\s+(can|may)\s+i\s+(assist|help)\s+you\s+(today|now)?[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)how\s+may\s+i\s+be\s+of\s+(assistance|help)[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)is\s+there\s+anything\s+(else\s+)?i\s+can\s+help\s+(you\s+)?with[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)i\s*['\u2019]?m\s+here\s+to\s+(help|assist)[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)happy\s+to\s+help[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)glad\s+to\s+(have\s+you|hear\s+from\s+you)[^\.\!\?\n]*[\.\!\?]*/gi,
+  ];
+  for (const re of bannedSentencePatterns) {
+    out = out.replace(re, (_m, lead: string) => (lead ?? "").replace(/[\.\!\?]\s*$/, ". "));
+  }
+
+  // Word-level filler openers ("Absolutely," / "Sure thing," / "Of course,"...):
+  // strip only when they appear at the start of a sentence/bubble.
+  out = out.replace(
+    /(^|[\.\!\?\n]\s*)(absolutely|certainly|sure\s+thing|of\s+course|great\s+question|i\s+understand)[\s,!\.:;\u2014\u2013\-]+/gi,
+    (_m, lead: string) => lead ?? "",
+  );
+
+  // Collapse whitespace we may have opened up.
+  out = out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+
+  // If we deleted everything, hand back a warm mirrored fallback instead of "".
+  if (!out) {
+    return localizedText(lastUserText, {
+      roman: "Bilkul, bataiye kis cheez ki tafseel chahiye?",
+      english: "Yes — tell me what you'd like to know more about.",
+      urdu: "جی، بتائیں کس بارے میں مزید جاننا ہے؟",
+      hindi: "जी, बताइए किस बारे में और जानना है?",
+      arabic: "تفضّل، ما الذي تودّ معرفته بالتفصيل؟",
+    });
+  }
+  return out;
 }
 
 
