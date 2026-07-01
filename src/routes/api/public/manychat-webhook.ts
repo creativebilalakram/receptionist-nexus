@@ -2714,6 +2714,7 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
     | { "type": "list_bookings" }
     | { "type": "cancel_booking", "appointment_id": "<id|null>", "reason": "<short reason|null>" }
     | { "type": "reschedule_booking", "appointment_id": "<id|null>", "new_slot_iso_utc": "<iso>" }
+    | { "type": "restore_booking" }
 }
 
 REPLY_PARTS RULES:
