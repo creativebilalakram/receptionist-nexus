@@ -61,7 +61,7 @@ export const debugWipeAllAppointments = createServerFn({ method: "POST" })
       client_id: data.clientId,
       direction: "system",
       status_code: 200,
-      request_payload: {
+      payload: {
         marker: "manual_test_data_wipe",
         deleted_count: count,
         by_user: context.userId,
