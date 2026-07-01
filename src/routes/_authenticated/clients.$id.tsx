@@ -55,7 +55,16 @@ function ClientDetail() {
           <h1 className="mt-2 text-display">{client.business_name}</h1>
           {client.niche && <p className="mt-1 text-sm text-muted-foreground">{client.niche}</p>}
         </div>
-        <StatusPill status={client.is_active ? "active" : "idle"} />
+        <div className="flex items-center gap-3">
+          <Link
+            to="/clients/$id/booking-debug"
+            params={{ id: client.id }}
+            className="rounded border border-border px-3 py-1.5 text-xs font-mono uppercase tracking-wider text-muted-foreground hover:border-primary/40 hover:text-foreground"
+          >
+            Booking debug
+          </Link>
+          <StatusPill status={client.is_active ? "active" : "idle"} />
+        </div>
       </div>
 
       <Tabs defaultValue="setup" className="mt-8">
