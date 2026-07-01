@@ -2004,7 +2004,7 @@ async function draftBookingReply(
   if (!aiKey) return null;
   try {
     const { retryFetch } = await import("@/lib/retry");
-    const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const aiModel = process.env.OPENAI_MODEL || "gpt-4.1-mini";
     const resp = await retryFetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json", "Authorization": `Bearer ${aiKey}` },
