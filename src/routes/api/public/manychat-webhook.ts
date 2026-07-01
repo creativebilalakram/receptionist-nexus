@@ -1826,6 +1826,7 @@ function pickAckText(
         list_bookings: "ek sec, *bookings* nikaal raha hun…",
         cancel_booking: "ek sec, *cancel* kar raha hun…",
         reschedule_booking: "ek sec, *reschedule* kar raha hun…",
+        restore_booking: "ek sec, wo booking *wapas* laata hun…",
       },
       english: {
         check_availability: "one sec, let me *check*…",
@@ -1833,6 +1834,7 @@ function pickAckText(
         list_bookings: "one sec, pulling up your *bookings*…",
         cancel_booking: "one sec, *cancelling* now…",
         reschedule_booking: "one sec, *rescheduling* now…",
+        restore_booking: "one sec, *restoring* that booking…",
       },
       urdu: {
         check_availability: "ایک سیکنڈ، چیک کرتا ہوں…",
@@ -1840,6 +1842,7 @@ function pickAckText(
         list_bookings: "ایک سیکنڈ، آپ کی bookings دیکھتا ہوں…",
         cancel_booking: "ایک سیکنڈ، cancel کر رہا ہوں…",
         reschedule_booking: "ایک سیکنڈ، reschedule کر رہا ہوں…",
+        restore_booking: "ایک سیکنڈ، وہ booking واپس لاتا ہوں…",
       },
       hindi: {
         check_availability: "एक सेकंड, चेक करता हूँ…",
@@ -1847,6 +1850,7 @@ function pickAckText(
         list_bookings: "एक सेकंड, आपकी bookings देखता हूँ…",
         cancel_booking: "एक सेकंड, cancel कर रहा हूँ…",
         reschedule_booking: "एक सेकंड, reschedule कर रहा हूँ…",
+        restore_booking: "एक सेकंड, वो booking वापस लाता हूँ…",
       },
       arabic: {
         check_availability: "لحظة، أتحقق لك…",
@@ -1854,6 +1858,7 @@ function pickAckText(
         list_bookings: "لحظة، أجلب حجوزاتك…",
         cancel_booking: "لحظة، ألغي الحجز الآن…",
         reschedule_booking: "لحظة، أعيد الجدولة الآن…",
+        restore_booking: "لحظة، أستعيد الحجز…",
       },
     };
     return map[lang][actionType];
