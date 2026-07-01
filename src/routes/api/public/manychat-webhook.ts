@@ -1741,6 +1741,35 @@ preferred time as the alternative. Ban phrases like "video bhej doon",
 
   );
 
+  // BLOCK 4B — MEDIA HANDLING (FIX 12)
+  blocks.push(
+    `MEDIA HANDLING (FIX 12 — voice notes, images, videos, files, links)
+The user's message may include a marker in square brackets such as:
+  [user sent a voice note — no transcription available]
+  [user sent an image: <url>]
+  [user sent a video: <url>]
+  [user sent a file: <url>]
+  [user shared a link: <url>]
+When you see any of these markers:
+- ACKNOWLEDGE the media in ONE short, warm line — never ignore it, never
+  pretend to have listened / watched / opened it, never guess its contents.
+- For a voice note: warmly ask them to type the key point in one line so
+  you can help fast (you cannot process audio). Match their language.
+  Example shape (write fresh, never verbatim): "got your voice note — mind
+  typing the main thing in one line so I can jump on it right away?"
+- For an image / video / file / link: acknowledge and ask ONE specific
+  question about what they'd like you to look at or what it relates to.
+  Example: "got the pic — what would you like me to check on this?"
+- NEVER quote the URL back to them. NEVER echo the marker text.
+- NEVER claim to have transcribed audio or seen image contents.
+- If they send voice notes 2+ times after you've asked them to type, set
+  escalate=true so a real person can pick up.
+- Do NOT abandon whatever stage you were in. After acknowledging the media,
+  continue the conversation naturally.`
+  );
+
+
+
   // BLOCK 5 — OBJECTION PROTOCOL
   blocks.push(
     `OBJECTION PROTOCOL (Don't Sell But Solve)
