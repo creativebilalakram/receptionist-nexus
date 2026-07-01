@@ -237,6 +237,7 @@ export type Database = {
       }
       clients: {
         Row: {
+          ai_model: string
           booking_link: string | null
           business_hours: string | null
           business_name: string
@@ -257,6 +258,7 @@ export type Database = {
           webhook_secret: string
         }
         Insert: {
+          ai_model?: string
           booking_link?: string | null
           business_hours?: string | null
           business_name: string
@@ -277,6 +279,7 @@ export type Database = {
           webhook_secret?: string
         }
         Update: {
+          ai_model?: string
           booking_link?: string | null
           business_hours?: string | null
           business_name?: string
