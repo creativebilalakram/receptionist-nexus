@@ -1453,6 +1453,23 @@ function looksLikeAvailabilityAsk(text: string): boolean {
   return /\b(avb|avail|available|availability|slot|slots|time|timing|when|kab|konsa|dikhao|show)\b/.test(t);
 }
 
+// Detect explicit "undo the cancellation" intent from the user's own words.
+// Only fires if we can also see a recent assistant "cancel done" bubble, so a
+// random "wapas" doesn't accidentally rebook.
+function looksLikeExplicitRestoreIntent(text: string, messages: Msg[]): boolean {
+  const t = (text || "").toLowerCase();
+  const triggers = [
+    "wapas", "waapas", "wapis", "restore", "undo", "un-cancel", "uncancel",
+    "phir se book", "dobara book", "firse book", "put it back", "bring it back",
+    "no wrong one", "no that was wrong", "wrong one cancel", "galat cancel",
+    "no way jo", "no way i", "revert", "cancel wapas",
+  ];
+  const hit = triggers.some((k) => t.includes(k));
+  if (!hit) return false;
+  const recentAssistant = messages.slice(-6).filter((m) => m.role === "assistant").map((m) => m.content.toLowerCase()).join(" | ");
+  return /cancel/.test(recentAssistant) && /(done|ho gaya|cancel(led)?|cancel kar di|تم إلغاء|कैंसल)/.test(recentAssistant);
+}
+
 function looksLikeExplicitBookingTurn(text: string, messages: Msg[]): boolean {
   const t = (text ?? "").toLowerCase();
   if (!t.trim()) return false;
