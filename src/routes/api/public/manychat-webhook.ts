@@ -2494,6 +2494,9 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
       { "type": "none" }
     | { "type": "check_availability", "user_stated_time": "<verbatim>", "preferred_date_label": "<label?>", "preferred_time_window": "morning|afternoon|evening|specific_time|any", "specific_time_local": "<HH:MM|null>" }
     | { "type": "book_slot", "slot_iso_utc": "<iso>", "contact_email": "<email|null>" }
+    | { "type": "list_bookings" }
+    | { "type": "cancel_booking", "appointment_id": "<id|null>", "reason": "<short reason|null>" }
+    | { "type": "reschedule_booking", "appointment_id": "<id|null>", "new_slot_iso_utc": "<iso>" }
 }
 
 REPLY_PARTS RULES:
@@ -2502,9 +2505,47 @@ REPLY_PARTS RULES:
 - Each bubble independently follows tone rules (short, *bold* keywords, no dashes, mirrored language).
 - "reply" should still contain the full text (parts joined) as a fallback.
 
+TOOL CATALOG — pick ONE action per turn. The backend runs it and returns real data. Never fabricate the result.
+
+1) "none"
+   USE WHEN: any turn that does not need to touch the calendar (chat, discovery, objections, general questions, small talk, confirmations after a successful booking).
+
+2) "check_availability"  →  is this time free? what alternatives exist?
+   USE WHEN: user asks about a time / a date / "kya available hai" / "when can we meet" / gives a specific time / says "morning" / "evening" / etc.
+   FIELDS: user_stated_time (their exact phrase), preferred_date_label ("tomorrow" | "friday" | "2026-07-03"...), preferred_time_window ("morning"|"afternoon"|"evening"|"specific_time"|"any"), specific_time_local ("14:00" or null).
+   BACKEND RETURNS: exact_available (bool), exact_slot, alternatives[], window_empty. You then confirm or offer 1-2 alternatives in prose.
+
+3) "book_slot"  →  actually create the appointment.
+   USE WHEN: user has clearly said YES to a specific time you (or they) previously proposed and that time appeared in a check_availability tool result THIS conversation.
+   FIELDS: slot_iso_utc (must be the exact ISO from the most recent check_availability result — never invent), contact_email (if you already collected it, else null).
+   HARD RULE: never emit book_slot without a recent successful check_availability. If unsure, run check_availability first.
+
+4) "list_bookings"  →  what does this contact currently have booked?
+   USE WHEN: user asks "kya meri booking hai?", "when is my demo?", "check my appointment", or before offering to cancel/reschedule and you don't already have the appointment in mind.
+   NO FIELDS.
+
+5) "cancel_booking"  →  cancel an existing appointment.
+   USE WHEN: user clearly says "cancel my booking" / "cancel kar do" / "I want to cancel" / "meeting cancel". If they haven't said which one and multiple exist, run list_bookings first.
+   FIELDS: appointment_id (null = cancel their soonest upcoming), reason (short natural reason, optional).
+
+6) "reschedule_booking"  →  move an existing appointment to a new time.
+   USE WHEN: user wants to change the time of an existing booking AND has confirmed the new time (which must have come from a recent check_availability result).
+   FLOW: (a) if you don't know the new time yet, run check_availability first. (b) once they confirm, emit reschedule_booking with new_slot_iso_utc.
+   FIELDS: appointment_id (null = reschedule their soonest upcoming), new_slot_iso_utc (exact ISO from the recent check_availability).
+
+DECISION SHORTCUTS:
+- User asks "kya available hai / any slots / kab free ho" → check_availability.
+- User says a specific time ("Wed 4pm", "kal 11am") → check_availability with that time.
+- User replies "haan" / "yes" / "kar do" to a time you just offered → book_slot with that ISO.
+- User says "cancel" / "cancel kar do" / "don't want it anymore" → cancel_booking.
+- User says "reschedule" / "change time" / "move to X" → check_availability for X (if given) or ask; then reschedule_booking.
+- User says "when is my booking?" / "kya time hai meri booking?" → list_bookings.
+- Anything else → "none".
+
 STRICT TOOL NAME RULE:
-- booking_action.type MUST be exactly one of: "none", "check_availability", "book_slot".
-- NEVER invent tool names like "get_slots", "show_slots", "availability", or "confirm_booking".`
+- booking_action.type MUST be exactly one of: "none", "check_availability", "book_slot", "list_bookings", "cancel_booking", "reschedule_booking".
+- NEVER invent tool names like "get_slots", "show_slots", "availability", "confirm_booking", "delete_booking".
+- Exactly ONE action per turn. If two things are needed (e.g. check + book), take the FIRST step this turn and the next step on the next turn.`
   );
 
   // BLOCK 8B — RUNTIME FACTS (FIX 15B and future dynamic hints)
