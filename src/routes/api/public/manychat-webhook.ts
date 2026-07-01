@@ -552,14 +552,20 @@ async function processAndSend(
   aiReply = sanitizeReplyText(aiReply);
 
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
+  // FIX 1: the premium first-message opener MUST arrive as ONE bubble so the
+  // closing question is never dropped by autoSplit or a delivery hiccup.
   let parts: string[] = [];
-  const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
-    ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
-    : [];
-  if (modelParts.length > 0) {
-    parts = modelParts.slice(0, 3); // hard cap 3 bubbles
+  if (isFirstEverMessage) {
+    parts = [aiReply];
   } else {
-    parts = autoSplitReply(aiReply);
+    const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
+      ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
+      : [];
+    if (modelParts.length > 0) {
+      parts = modelParts.slice(0, 3); // hard cap 3 bubbles
+    } else {
+      parts = autoSplitReply(aiReply);
+    }
   }
   // Final guard: never send empty
   if (parts.length === 0) parts = [aiReply];
