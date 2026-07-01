@@ -69,6 +69,117 @@ type AIResponse = {
 
 type Msg = { role: "user" | "assistant"; content: string; timestamp: string };
 
+// FIX 11 — FRUSTRATION ESCALATION
+// Code-level guard: the prompt-side escalation rule alone was not firing
+// reliably (audit showed users typing "voice ma" 3x in a row with no
+// handoff). This detects repetition + explicit handoff phrases + hard
+// frustration cues and force-escalates before the AI call.
+const HANDOFF_PHRASES = [
+  // English
+  "human", "real person", "real human", "actual person", "someone real",
+  "talk to someone", "speak to someone", "talk to a person", "speak to a human",
+  "customer service", "customer support", "support agent", "manager",
+  // Roman Urdu / Hindi
+  "insaan", "insan", "banda", "asli banda", "asal banda", "kisi banda",
+  "kisi insan", "asli insaan", "koi banda", "koi insaan",
+  // Arabic
+  "شخص حقيقي", "انسان", "موظف",
+];
+const FRUSTRATION_PHRASES = [
+  // English
+  "not working", "you're not understanding", "you are not understanding",
+  "this isn't working", "this is not working", "useless", "waste of time",
+  "stop repeating", "same thing again", "already said", "already told",
+  // Roman Urdu
+  "samajh nahi", "samjh nahi", "samajh nai", "nahi samjha", "nahi samjhi",
+  "faltu", "bekar", "time waste", "waqt zaya", "phir se", "pehle bhi",
+  "already bata", "pehle bata",
+];
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+}
+function jaccardSimilarity(a: string, b: string): number {
+  const ta = new Set(normalizeForMatch(a).split(" ").filter(Boolean));
+  const tb = new Set(normalizeForMatch(b).split(" ").filter(Boolean));
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let inter = 0;
+  for (const t of ta) if (tb.has(t)) inter++;
+  const union = ta.size + tb.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+function detectFrustrationEscalation(
+  currentText: string,
+  history: Msg[],
+): { escalate: boolean; reason: string } | null {
+  const norm = normalizeForMatch(currentText);
+  if (!norm) return null;
+
+  // 1) Explicit handoff request → immediate escalate
+  for (const p of HANDOFF_PHRASES) {
+    const np = normalizeForMatch(p);
+    if (np && norm.includes(np)) {
+      return { escalate: true, reason: `explicit_handoff_request: "${p}"` };
+    }
+  }
+
+  // 2) Explicit frustration cue → immediate escalate
+  for (const p of FRUSTRATION_PHRASES) {
+    const np = normalizeForMatch(p);
+    if (np && norm.includes(np)) {
+      return { escalate: true, reason: `frustration_cue: "${p}"` };
+    }
+  }
+
+  // 3) SHOUTING (majority uppercase, length > 8) after some history
+  const letters = currentText.replace(/[^A-Za-z]/g, "");
+  if (letters.length >= 8) {
+    const upper = letters.replace(/[^A-Z]/g, "").length;
+    if (upper / letters.length >= 0.8 && history.filter((m) => m.role === "user").length >= 1) {
+      return { escalate: true, reason: "shouting_caps" };
+    }
+  }
+
+  // 4) Repetition: current + last 2 user messages are near-duplicates
+  const userMsgs = history.filter((m) => m.role === "user").map((m) => m.content);
+  const recent = userMsgs.slice(-2); // messages BEFORE current (current not yet pushed at call site)
+  if (recent.length === 2) {
+    const s1 = jaccardSimilarity(currentText, recent[recent.length - 1]);
+    const s2 = jaccardSimilarity(currentText, recent[recent.length - 2]);
+    const s3 = jaccardSimilarity(recent[0], recent[1]);
+    // Either near-identical repeats, OR short repeated ask (<= 5 words) twice
+    const wordCount = normalizeForMatch(currentText).split(" ").filter(Boolean).length;
+    if ((s1 >= 0.7 && s2 >= 0.6) || (s1 >= 0.6 && s3 >= 0.6) || (wordCount <= 5 && s1 >= 0.6 && s2 >= 0.5)) {
+      return { escalate: true, reason: "repeated_unresolved_ask" };
+    }
+  }
+
+  return null;
+}
+
+// Localized handoff message when code-level escalation fires.
+function detectLangHint(text: string): "en" | "ur" | "ar" {
+  if (/[\u0600-\u06FF]/.test(text)) {
+    // Arabic script — could be Urdu or Arabic; assume Urdu unless clearly Arabic markers
+    if (/\bال|في|من|على|هذا|هذه\b/.test(text)) return "ar";
+    return "ur";
+  }
+  const roman = normalizeForMatch(text);
+  if (/\b(hai|nahi|kya|kaisay|kaise|ap|aap|acha|theek|mujhe|mera|meri|karo|kro|please plz|mein|mein|krna|karna|dena|dedo|bhej|bata|batao|kar|ho|hoga|hogaya|banda|insaan)\b/.test(roman)) {
+    return "ur";
+  }
+  return "en";
+}
+function handoffMessage(firstName: string | null, lang: "en" | "ur" | "ar"): string {
+  const name = firstName ? `, ${firstName}` : "";
+  if (lang === "ur") {
+    return `bilkul${name} — main abhi apni team ke aik banday ko is chat mein la raha hoon jo aap ki personally madad karein ge. thori der mein wo aap ko yahan reply karein ge.`;
+  }
+  if (lang === "ar") {
+    return `تمام${name} — سأحضر شخصًا من فريقنا ليتابع معك مباشرة هنا. سيتواصل معك بعد قليل.`;
+  }
+  return `Got it${name} — I'm looping in one of our team right now to take this personally. They'll jump in here shortly.`;
+}
+
 type ClientRow = {
   business_name: string;
   niche: string | null;
