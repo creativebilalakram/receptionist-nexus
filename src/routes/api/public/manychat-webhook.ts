@@ -247,16 +247,22 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const first_name = sanitizePlaceholder(rawData.first_name ?? null);
         const rawMessageText = (rawData.message_text ?? rawData.last_input_text ?? "").trim();
         // FIX 3 — ManyChat greeting / placeholder scrub.
-        // ManyChat frequently ships the FIRST inbound as either an unresolved
-        // template ("{{first_name}}", "First Name", "[[phone]]") or its own
-        // canned opener the subscriber tapped ("Hi, I'd like to learn more...").
-        // We do three things:
-        //   1) strip unresolved {{...}} / [[...]] / <<...>> tokens
-        //   2) if the remaining text is empty / a bare placeholder word, treat
-        //      the message as an intent-to-start (so the premium opener fires
-        //      cleanly instead of the AI echoing the placeholder back)
-        //   3) hand the cleaned text downstream so the AI never quotes a token
-        const message_text = sanitizeInboundText(rawMessageText);
+        const cleanedText = sanitizeInboundText(rawMessageText);
+        // FIX 12 — MEDIA HANDLING
+        // ManyChat forwards WhatsApp voice notes / images / videos / files as
+        // attachments with either an empty `last_input_text` or a bare URL.
+        // Previously the webhook 400'd on empty text, so the user's voice
+        // note produced silence — user then repeats "voice ma" 3x, bot never
+        // acknowledges. Detect media, synthesize a marker so the AI sees it,
+        // and let the MEDIA HANDLING prompt block route the response.
+        const media = detectInboundMedia(rawData, rawMessageText);
+        let message_text = cleanedText;
+        if (media && (!message_text || message_text === "hi")) {
+          message_text = mediaMarkerText(media);
+        } else if (media && message_text) {
+          // Real text + a media attachment — append marker so AI acknowledges both.
+          message_text = `${message_text}\n${mediaMarkerText(media)}`;
+        }
 
         if (!client_id || !webhook_secret || !subscriber_id || !message_text) {
           await supabaseAdmin.from("webhook_logs").insert({
@@ -269,6 +275,13 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             ].filter(Boolean).join(",")}`,
           });
           return new Response(JSON.stringify({ ai_reply: "", error: "invalid_payload" }), { status: 400, headers: cors });
+        }
+
+        if (media) {
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id, direction: "inbound", payload: { media, marker: message_text } as unknown as Json,
+            status_code: 200, error: `media_detected:${media.kind}`,
+          });
         }
 
         const data = { client_id, webhook_secret, subscriber_id, phone, first_name, message_text };
