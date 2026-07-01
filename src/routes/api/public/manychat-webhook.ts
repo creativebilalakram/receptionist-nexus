@@ -133,7 +133,7 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const webhook_secret = rawData.webhook_secret ?? qSecret;
         const subscriber_id = rawData.subscriber_id ?? (rawData.id != null ? String(rawData.id) : "");
         const phone = rawData.phone ?? rawData.whatsapp_phone ?? null;
-        const first_name = rawData.first_name ?? null;
+        const first_name = sanitizePlaceholder(rawData.first_name ?? null);
         const rawMessageText = (rawData.message_text ?? rawData.last_input_text ?? "").trim();
         // FIX 3 — ManyChat greeting / placeholder scrub.
         // ManyChat frequently ships the FIRST inbound as either an unresolved
