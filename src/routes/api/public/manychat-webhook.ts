@@ -2430,6 +2430,40 @@ function scrubImaginaryOffers(text: string): string {
   return kept.join(" ");
 }
 
+/**
+ * Defensive cleanup for the premium first-message opener.
+ * - Removes leading bullet markers ("• ", "- ", "* ", "1. ") from any line.
+ * - Drops lines that look like a capability/feature dump (short fragments
+ *   about "AI", "24/7", "bookings", "handle X", "free up staff") when we
+ *   already have a substantive line + a closing question.
+ * - Collapses runs of blank lines and trims to a max of 3 non-empty lines.
+ */
+function sanitizeOpener(text: string): string {
+  if (!text) return text;
+  let lines = text.replace(/\r\n/g, "\n").split("\n").map((l) => l.trim());
+  lines = lines.map((l) => l.replace(/^(?:\d{1,2}[.)]\s+|[-*•·▪→]\s+)/, "").trim());
+  // If everything ended up glued on ONE line with " • " separators, split it.
+  if (lines.length === 1 && / [•·▪→] /.test(lines[0])) {
+    lines = lines[0].split(/\s*[•·▪→]\s*/).map((l) => l.trim());
+  }
+  lines = lines.filter((l) => l.length > 0);
+  // Drop obvious capability-list fragments if we still have >2 lines.
+  const isCapabilityFragment = (l: string) =>
+    l.length < 90 && /\b(24\/?7|AI|bookings?|questions?\s+instantly|free\s+up|handles?|WhatsApp\s+24)\b/i.test(l) && !/\?$/.test(l);
+  if (lines.length > 2) {
+    const withQuestion = lines.findIndex((l) => /\?$/.test(l));
+    const kept: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (i !== withQuestion && kept.length >= 1 && isCapabilityFragment(lines[i])) continue;
+      kept.push(lines[i]);
+    }
+    lines = kept;
+  }
+  // Cap to 3 non-empty lines.
+  lines = lines.slice(0, 3);
+  return lines.join("\n").trim();
+}
+
 
 
 
