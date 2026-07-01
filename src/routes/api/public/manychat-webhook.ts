@@ -552,14 +552,20 @@ async function processAndSend(
   aiReply = sanitizeReplyText(aiReply);
 
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
+  // FIX 1: the premium first-message opener MUST arrive as ONE bubble so the
+  // closing question is never dropped by autoSplit or a delivery hiccup.
   let parts: string[] = [];
-  const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
-    ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
-    : [];
-  if (modelParts.length > 0) {
-    parts = modelParts.slice(0, 3); // hard cap 3 bubbles
+  if (isFirstEverMessage) {
+    parts = [aiReply];
   } else {
-    parts = autoSplitReply(aiReply);
+    const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
+      ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
+      : [];
+    if (modelParts.length > 0) {
+      parts = modelParts.slice(0, 3); // hard cap 3 bubbles
+    } else {
+      parts = autoSplitReply(aiReply);
+    }
   }
   // Final guard: never send empty
   if (parts.length === 0) parts = [aiReply];
@@ -1056,15 +1062,24 @@ When the user says "tomorrow", "kal", "next week", etc., resolve relative to THI
   );
 
   // BLOCK 2A — FIRST MESSAGE ONLY (premium opener)
+  // FIX 1: Enforce SINGLE-BUBBLE structure. No double line-breaks anywhere
+  // (autoSplit would treat them as bubble boundaries and could drop the
+  // closing question). Keep total under 500 chars.
   if (isFirstEverMessage) {
     blocks.push(
-      `FIRST MESSAGE ONLY — this is the very first message in this conversation (no prior history). Do NOT use the standard Stage 1 single-question opener. Instead, send ONE premium, warm message with this exact structure:
-
-1. A warm one-line welcome${firstName ? ` using their first name (${firstName})` : " (use their first name if known)"} — genuinely glad-you're-here in tone, never generic ("Hi, how can I help"). Write fresh wording, do not template.
-2. Exactly THREE short bullet points using the • symbol (not markdown dashes), each one short outcome-focused phrase about ${client.business_name} — pull from the services list, pick the 3 most relevant/compelling capabilities, punchy one-liners (no periods).
-3. End with ONE warm, specific, open discovery question that flows naturally after the bullets.
-
-Keep it tight: 4-6 lines total including the bullets. Premium tone — confident, unhurried, never salesy, no exclamation spam. After this first message, all future replies follow the normal Stage 1-7 flow below. This special structure applies ONLY to message #1, never again.`
+      `FIRST MESSAGE ONLY — this is the very first message in this conversation (no prior history). Do NOT use the standard Stage 1 single-question opener. Send ONE premium message (delivered as ONE WhatsApp bubble) with this EXACT structure — use SINGLE line-breaks only, NEVER a blank line between sections:
+Line 1: warm one-line welcome${firstName ? ` using their first name (${firstName})` : " (use their first name if known)"} — genuinely glad-you're-here, fresh wording, never generic.
+Line 2: • <short outcome-focused capability of ${client.business_name}, no trailing period>
+Line 3: • <second capability, no trailing period>
+Line 4: • <third capability, no trailing period>
+Line 5: ONE warm, specific, open discovery question that flows naturally after the bullets.
+HARD RULES for this opener:
+- Total message MUST be under 500 characters.
+- Use SINGLE newlines (\\n) between every line. NEVER emit a blank line / double newline anywhere — that would split the message into separate bubbles and the closing question would be lost.
+- Do NOT emit reply_parts for this opener. Put the entire opener into the single "reply" field.
+- Use "• " (bullet + space) for the three bullets, not markdown dashes.
+- No exclamation spam. Confident, unhurried premium tone.
+After this first message, all future replies follow the normal Stage 1-7 flow below. This special structure applies ONLY to message #1, never again.`
     );
   }
 
