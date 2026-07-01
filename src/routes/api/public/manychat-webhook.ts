@@ -1004,6 +1004,8 @@ async function processAndSend(
       manychat_send_ok: sendRes.ok,
       manychat_send_status: sendRes.status,
       manychat_send_error: sendRes.ok ? null : sendRes.error,
+      watchdog_fired: watchdogFired,
+      repeat_streak: repeatInfo.repeatCount,
     } as unknown as Json,
     response: { ai: aiResponseLog, manychat: sendRes.body ?? null } as Json,
     status_code: sendRes.ok ? 200 : (sendRes.status || 500),
