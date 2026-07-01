@@ -56,11 +56,30 @@ export const Route = createFileRoute("/api/public/followups")({
         const skipped: Array<{ id: string; reason: string }> = [];
 
         for (const c of candidates ?? []) {
-          // Skip if no real interest signal
-          const interested =
-            (c.lead_score ?? 0) > 0 ||
-            ["qualify", "position", "invite", "close"].includes(String(c.current_stage ?? ""));
-          if (!interested) { skipped.push({ id: c.id, reason: "not_interested" }); continue; }
+          const messages: Msg[] = Array.isArray(c.messages) ? (c.messages as unknown as Msg[]) : [];
+          if (messages.length === 0) { skipped.push({ id: c.id, reason: "empty" }); continue; }
+
+          // --- Fix 9: substance gate ---
+          // A followup is only allowed if we have REAL context to reference.
+          // "Hi" alone is not context — sending a personalized-sounding followup on
+          // that would fabricate a discussion that never happened.
+          const userMsgs = messages.filter((m) => m.role === "user");
+          const substantiveUserMsgs = userMsgs.filter((m) => {
+            const t = (m.content ?? "").trim();
+            if (t.length < 15) return false; // very short = greeting/emoji/thanks
+            // strip common greetings
+            const stripped = t.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim();
+            if (/^(hi|hey|hello|salam|assalam[uo]?\s?alaikum|aoa|yo|sup|thanks|thank\s?you|shukriya|ok|okay|k)\b/.test(stripped) && stripped.split(/\s+/).length <= 4) return false;
+            return true;
+          });
+          const hasSubstance = substantiveUserMsgs.length > 0;
+          const strongStage = ["qualify", "position", "invite", "close"].includes(String(c.current_stage ?? ""));
+          const scored = (c.lead_score ?? 0) > 0;
+
+          // Require at least ONE substantive user message. Score/stage alone is not
+          // enough — those can get bumped by the bot's own logic without real signal.
+          if (!hasSubstance) { skipped.push({ id: c.id, reason: "no_substance" }); continue; }
+          if (!strongStage && !scored) { skipped.push({ id: c.id, reason: "not_interested" }); continue; }
 
           // Skip if already has a scheduled/confirmed appointment
           const { data: appts } = await supabaseAdmin
@@ -75,8 +94,6 @@ export const Route = createFileRoute("/api/public/followups")({
             continue;
           }
 
-          const messages: Msg[] = Array.isArray(c.messages) ? (c.messages as unknown as Msg[]) : [];
-          if (messages.length === 0) { skipped.push({ id: c.id, reason: "empty" }); continue; }
 
           // Load client context
           const { data: client } = await supabaseAdmin
@@ -188,13 +205,31 @@ async function generateFollowup(args: {
   if (!aiKey) return null;
   const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-  const transcript = args.messages.slice(-12).map((m) =>
-    `${m.role === "user" ? "USER" : "AI"}: ${m.content}`
+  // Only include REAL messages the user actually typed. Never invent anything else.
+  const trimmed = args.messages.slice(-12);
+  const transcript = trimmed.map((m) =>
+    `${m.role === "user" ? "USER" : "AI"}: ${(m.content ?? "").trim()}`
   ).join("\n");
 
+  // Extract the user's own words verbatim so the model has an explicit
+  // whitelist of what it's allowed to reference.
+  const userUtterances = trimmed
+    .filter((m) => m.role === "user")
+    .map((m) => (m.content ?? "").trim())
+    .filter((t) => t.length > 0);
+  const userWordsBlock = userUtterances.length
+    ? userUtterances.map((t, i) => `  [${i + 1}] "${t}"`).join("\n")
+    : "  (none — the lead has not shared any real details yet)";
+
+  const hasRealSubstance = userUtterances.some((t) => t.length >= 15);
+
   const attemptGuidance = args.attempt <= 1
-    ? "This is the FIRST follow-up. Warm, curious, low pressure. Reference something specific they said."
+    ? "This is the FIRST follow-up. Warm, curious, low pressure."
     : `This is follow-up #${args.attempt}. Take a DIFFERENT angle than any prior message — new hook, new question. Do NOT repeat earlier phrasing. Acknowledge time has passed, keep it light, no guilt-trip.`;
+
+  const substanceGuidance = hasRealSubstance
+    ? "You MAY reference specifics the user actually shared — but ONLY things that appear verbatim in USER MESSAGES above. Quote or paraphrase them exactly."
+    : "The user has NOT shared any real details yet (only greetings). You MUST NOT invent a topic, business type, timeline, pain point, or anything they 'mentioned' — they mentioned nothing. Write a short, light re-open that acknowledges you're still around and asks ONE open, generic question inviting them to share what's on their mind. Do NOT pretend a prior discussion happened.";
 
   const system = `You are the WhatsApp receptionist for *${args.client.business_name}*. The lead went silent. Write ONE warm, human, personalized follow-up.
 
@@ -207,10 +242,16 @@ STAGE WHEN THEY DROPPED: ${args.stage ?? "open"}
 
 ${attemptGuidance}
 
-CONVERSATION SO FAR:
+USER MESSAGES (verbatim — the ONLY things they've actually said):
+${userWordsBlock}
+
+FULL TRANSCRIPT (for context — do not reference AI's own past claims as if they were the user's):
 ${transcript}
 
-RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Output ONLY the message text.`;
+ANTI-FABRICATION: ${substanceGuidance}
+
+RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Never say phrases like "as you mentioned", "regarding what you said about X", "circling back on your interest in Y" unless X/Y literally appears in USER MESSAGES above. Output ONLY the message text.`;
+
 
   try {
     const { retryFetch } = await import("@/lib/retry");
