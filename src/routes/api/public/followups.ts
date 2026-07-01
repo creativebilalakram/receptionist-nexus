@@ -194,6 +194,16 @@ function dedupAgainstHistory(candidate: string, history: Msg[]): string | null {
   return candidate;
 }
 
+// FIX 10 — see manychat-webhook.ts for the sibling implementation.
+const FU_ARTIFACT_RE = /(video|videos|pdf|pdfs|brochure|deck|slide\s?deck|slides|screenshot|screen\s?shot|case[\s-]?stud(?:y|ies)|recording|walk[\s-]?through(?:\s+video)?|sample|portfolio\s+file|attachment|attach)/i;
+const FU_SEND_VERB_RE = /(send|share|forward|attach|drop|deliver|email|whatsapp\s+you|bhej\w*|forwar\w*|share\s+kar\w*|send\s+kar\w*|bhej\s*d\w*)/i;
+function scrubImaginaryOffersFollowup(text: string): string {
+  if (!text) return text;
+  const chunks = text.split(/(?<=[.!?…])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const kept = chunks.filter((s) => !(FU_ARTIFACT_RE.test(s) && FU_SEND_VERB_RE.test(s)));
+  return kept.join(" ");
+}
+
 async function generateFollowup(args: {
   client: { business_name: string; niche: string | null; services: string | null; icp: string | null; tone_notes: string | null; faq: string | null; booking_link: string | null };
   firstName: string | null;
