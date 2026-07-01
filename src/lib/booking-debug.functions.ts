@@ -194,7 +194,7 @@ export const debugGenerateSlots = createServerFn({ method: "POST" })
       error: null as string | null,
       timezone: ctx.timezone,
       duration: dur,
-      step_minutes: dur + bb + ba + autoBuf,
+      step_minutes: Math.max(5, Math.min(15, dur)),
       footprint_minutes: footprint,
       busy_snapshot: ctx.busy.map((b) => ({ start: b.start.toISOString(), end: b.end.toISOString() })),
       slots,
