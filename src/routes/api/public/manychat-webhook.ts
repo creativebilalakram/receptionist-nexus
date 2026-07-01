@@ -1217,6 +1217,50 @@ function sanitizeReplyText(text: string): string {
   return out;
 }
 
+/**
+ * FIX 6 — De-list formatter. Converts robotic numbered / bulleted lists into
+ * conversational flowing prose. WhatsApp receptionists don't send:
+ *   "1. Option A\n2. Option B\n3. Option C"
+ * They send: "Option A, Option B, or Option C — which works?"
+ *
+ * Applied to every reply EXCEPT the premium first-message opener, which uses
+ * intentional "• " bullets that are part of its designed structure.
+ */
+function delistReplyText(text: string): string {
+  if (!text) return text;
+  const raw = text.replace(/\r\n/g, "\n");
+  const lines = raw.split("\n");
+
+  // Detect list items: "1. ", "1) ", "- ", "* ", "• ", "· ", "→ ", "▪ "
+  const listRe = /^\s*(?:\d{1,2}[.)]\s+|[-*•·▪→]\s+)(.+?)\s*$/;
+  const items: string[] = [];
+  const nonList: string[] = [];
+  let listRun = 0;
+
+  for (const line of lines) {
+    const m = line.match(listRe);
+    if (m) {
+      items.push(m[1].trim().replace(/[.,;:]+$/, ""));
+      listRun++;
+    } else if (line.trim() === "" && listRun > 0) {
+      // blank inside/after list — keep, don't reset yet
+    } else {
+      nonList.push(line);
+    }
+  }
+
+  // Only rewrite if we actually detected a list of 2+ items.
+  if (items.length < 2) return text;
+
+  const prose = items.length === 2
+    ? `${items[0]} or ${items[1]}`
+    : `${items.slice(0, -1).join(", ")}, or ${items[items.length - 1]}`;
+
+  const kept = nonList.map((l) => l.trim()).filter(Boolean).join("\n");
+  return (kept ? kept + " " : "") + prose;
+}
+
+
 
 
 
