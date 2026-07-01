@@ -133,8 +133,19 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const webhook_secret = rawData.webhook_secret ?? qSecret;
         const subscriber_id = rawData.subscriber_id ?? (rawData.id != null ? String(rawData.id) : "");
         const phone = rawData.phone ?? rawData.whatsapp_phone ?? null;
-        const first_name = rawData.first_name ?? null;
-        const message_text = (rawData.message_text ?? rawData.last_input_text ?? "").trim();
+        const first_name = sanitizePlaceholder(rawData.first_name ?? null);
+        const rawMessageText = (rawData.message_text ?? rawData.last_input_text ?? "").trim();
+        // FIX 3 — ManyChat greeting / placeholder scrub.
+        // ManyChat frequently ships the FIRST inbound as either an unresolved
+        // template ("{{first_name}}", "First Name", "[[phone]]") or its own
+        // canned opener the subscriber tapped ("Hi, I'd like to learn more...").
+        // We do three things:
+        //   1) strip unresolved {{...}} / [[...]] / <<...>> tokens
+        //   2) if the remaining text is empty / a bare placeholder word, treat
+        //      the message as an intent-to-start (so the premium opener fires
+        //      cleanly instead of the AI echoing the placeholder back)
+        //   3) hand the cleaned text downstream so the AI never quotes a token
+        const message_text = sanitizeInboundText(rawMessageText);
 
         if (!client_id || !webhook_secret || !subscriber_id || !message_text) {
           await supabaseAdmin.from("webhook_logs").insert({
@@ -1028,6 +1039,46 @@ function safeParseAIJson(content: string): AIResponse | null {
     if (direct) return direct;
   }
   return null;
+}
+
+/**
+ * FIX 3 — strip ManyChat placeholder tokens that leak into inbound payloads.
+ * Handles {{first_name}}, [[phone]], <<email>> and bare placeholder words
+ * ManyChat renders when the underlying variable is null.
+ */
+const PLACEHOLDER_WORDS = new Set([
+  "first name", "firstname", "last name", "lastname", "full name", "fullname",
+  "phone", "phone number", "email", "email address", "name", "user", "customer",
+  "n/a", "na", "null", "undefined",
+]);
+
+function sanitizePlaceholder(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const cleaned = String(v)
+    .replace(/\{\{[^}]*\}\}/g, " ")
+    .replace(/\[\[[^\]]*\]\]/g, " ")
+    .replace(/<<[^>]*>>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  if (PLACEHOLDER_WORDS.has(cleaned.toLowerCase())) return null;
+  return cleaned;
+}
+
+function sanitizeInboundText(raw: string): string {
+  if (!raw) return "";
+  // Strip unresolved template tokens but keep the rest of the sentence.
+  const stripped = raw
+    .replace(/\{\{[^}]*\}\}/g, " ")
+    .replace(/\[\[[^\]]*\]\]/g, " ")
+    .replace(/<<[^>]*>>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped) return "";
+  // If what's left is just a placeholder word, treat as a bare "hi" so the
+  // premium opener fires cleanly instead of the AI parroting "First Name".
+  if (PLACEHOLDER_WORDS.has(stripped.toLowerCase())) return "hi";
+  return stripped;
 }
 
 /**
