@@ -1282,6 +1282,7 @@ async function processAndSend(
       parts_count: parts.length,
       parsed: parsedAI,
       ai_status: aiStatusCode || 200,
+      model: aiModel,
       manychat_send_ok: sendRes.ok,
       manychat_send_status: sendRes.status,
       manychat_send_error: sendRes.ok ? null : sendRes.error,
@@ -1292,6 +1293,7 @@ async function processAndSend(
     status_code: sendRes.ok ? 200 : (sendRes.status || 500),
     error: sendRes.ok ? null : sendRes.error,
   });
+
 }
 
 /**
