@@ -2128,3 +2128,80 @@ function resolveTargetDateTime(
 
   return { date: dayAnchor, localYmd: ymd, exactUtcMs };
 }
+
+// ---------- FIX 14 / FIX 15B helpers ----------
+
+/**
+ * FIX 14 Layer 1 — deterministic "still working" bubble sent at 25s if the AI
+ * + tool loop hasn't produced a final reply yet. Localized per sticky lang.
+ */
+export function localizedStillWorking(lang: LangCode): string {
+  switch (lang) {
+    case "ur-roman": return "abhi bhi check kar raha hoon — ek moment aur…";
+    case "ur-script": return "ابھی بھی چیک کر رہا ہوں — ایک لمحہ اور…";
+    case "hi-script": return "अभी भी देख रहा हूँ — एक क्षण और…";
+    case "ar": return "ما زلت أتحقق — لحظة أخرى من فضلك…";
+    case "en":
+    default: return "still working on this — one more moment…";
+  }
+}
+
+/**
+ * FIX 14 Layer 2 — graceful recovery bubble for the watchdog cron.
+ */
+export function localizedRecovery(lang: LangCode): string {
+  switch (lang) {
+    case "ur-roman": return "sorry, thora tangle ho gaya tha — aap kya bata rahe the?";
+    case "ur-script": return "معذرت، تھوڑا سا الجھ گیا تھا — آپ کیا کہہ رہے تھے؟";
+    case "hi-script": return "माफ़ कीजिए, ज़रा उलझ गया था — आप क्या कह रहे थे?";
+    case "ar": return "آسف، حصل تشويش صغير — تفضل، شو كنت تقول؟";
+    case "en":
+    default: return "sorry, got tangled up for a second — you were saying?";
+  }
+}
+
+/**
+ * FIX 15B — exact-repeat user message detection.
+ *
+ * Returns a runtime fact string for the system prompt when the user has sent
+ * the same message text again within 5 minutes. Counts the total repeat streak
+ * (2 = second identical, 3+ = third+ — offer handoff).
+ */
+export function detectRepeatUserMessage(
+  currentText: string,
+  priorHistory: Array<{ role: string; content: string; timestamp: string }>,
+): { isRepeat: boolean; repeatCount: number; runtimeFact: string | null } {
+  const norm = (s: string) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const cur = norm(currentText);
+  if (!cur || cur.length < 2) return { isRepeat: false, repeatCount: 0, runtimeFact: null };
+
+  const nowMs = Date.now();
+  // Walk backwards through history, counting consecutive matching USER turns
+  // within the 5-minute window. Assistant turns in between don't reset the
+  // streak (the user is repeating themselves TO the bot).
+  let streak = 1; // includes the current message
+  for (let i = priorHistory.length - 1; i >= 0; i--) {
+    const m = priorHistory[i];
+    if (m.role !== "user") continue;
+    const t = Date.parse(m.timestamp);
+    if (!Number.isFinite(t)) break;
+    if (nowMs - t > 5 * 60_000) break;
+    if (norm(m.content) === cur) {
+      streak += 1;
+    } else {
+      break;
+    }
+  }
+
+  if (streak < 2) return { isRepeat: false, repeatCount: streak, runtimeFact: null };
+
+  const handoffLine = streak >= 3
+    ? "This is the 3rd+ identical repeat. Offer a warm human handoff now (e.g. 'let me get a real teammate on this with you') and set escalate=true with a short escalation_reason."
+    : "Do NOT repeat your previous response verbatim. Acknowledge briefly that you heard them, then either (a) ask ONE clarifying question about what specifically wasn't answered, or (b) offer a different angle on the same topic. Never re-fire the premium opener.";
+
+  return {
+    isRepeat: true,
+    repeatCount: streak,
+    runtimeFact: `The user just repeated their previous message (streak: ${streak}). ${handoffLine}`,
+  };
+}
