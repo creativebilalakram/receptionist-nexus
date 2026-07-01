@@ -1192,6 +1192,7 @@ async function processAndSend(
       const n = normalizeForCompare(m);
       if (n) seen.add(n);
     }
+    const deduped: string[] = [];
     const isFuzzyDup = (candidate: string): boolean => {
       for (const prev of priorAssistant) {
         if (jaccardSimilarity(candidate, prev) >= 0.6) return true;
@@ -1201,7 +1202,6 @@ async function processAndSend(
       }
       return false;
     };
-    var deduped: string[] = [];
     for (const p of parts) {
       const n = normalizeForCompare(p);
       if (!n || seen.has(n)) continue;
@@ -1210,7 +1210,6 @@ async function processAndSend(
       deduped.push(p);
     }
     if (deduped.length > 0) parts = deduped;
-    // Enforce hard cap once more post-dedup
     parts = parts.slice(0, 2);
   }
 
