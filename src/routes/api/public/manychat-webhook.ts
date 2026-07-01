@@ -551,6 +551,13 @@ async function processAndSend(
 
   aiReply = sanitizeReplyText(aiReply);
 
+  // FIX 2: if the sanitizer stripped a JSON-only payload down to nothing,
+  // fall back to a safe localized filler instead of shipping an empty bubble
+  // or the raw JSON. Language mirrors the last user message.
+  if (!aiReply || !aiReply.trim()) {
+    aiReply = pickPostAckFiller(data.message_text);
+  }
+
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
   // FIX 1: the premium first-message opener MUST arrive as ONE bubble so the
   // closing question is never dropped by autoSplit or a delivery hiccup.
@@ -559,12 +566,14 @@ async function processAndSend(
     parts = [aiReply];
   } else {
     const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
-      ? parsedAI!.reply_parts!.map((p) => (typeof p === "string" ? sanitizeReplyText(p) : "")).filter(Boolean)
+      ? parsedAI!.reply_parts!
+          .map((p) => (typeof p === "string" ? sanitizeReplyText(p) : ""))
+          .filter((p) => p && p.trim().length > 0)
       : [];
     if (modelParts.length > 0) {
       parts = modelParts.slice(0, 3); // hard cap 3 bubbles
     } else {
-      parts = autoSplitReply(aiReply);
+      parts = autoSplitReply(aiReply).filter((p) => p && p.trim().length > 0);
     }
   }
   // Final guard: never send empty
