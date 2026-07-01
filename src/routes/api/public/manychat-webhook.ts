@@ -2751,17 +2751,26 @@ TOOL CATALOG — pick ONE action per turn. The backend runs it and returns real 
    FLOW: (a) if you don't know the new time yet, run check_availability first. (b) once they confirm, emit reschedule_booking with new_slot_iso_utc.
    FIELDS: appointment_id (null = reschedule their soonest upcoming), new_slot_iso_utc (exact ISO from the recent check_availability).
 
+7) "restore_booking"  →  undo a cancellation that just happened.
+   USE WHEN: user says the last cancel was a mistake / wrong one ("wapas laga do", "undo", "no that was wrong", "restore my booking", "phir se book kar do wo wali") within the last hour.
+   NO FIELDS. The backend automatically restores the most recently cancelled booking in this conversation.
+
+CROSS-CONVERSATION SAFETY:
+- You can ONLY cancel or reschedule bookings that were made in THIS conversation with this user. Never touch anyone else's appointment.
+- If the user in this chat asks to cancel a booking they didn't make here, do NOT emit cancel_booking. Say you can only manage bookings made through this chat and offer a handoff.
+
 DECISION SHORTCUTS:
 - User asks "kya available hai / any slots / kab free ho" → check_availability.
 - User says a specific time ("Wed 4pm", "kal 11am") → check_availability with that time.
 - User replies "haan" / "yes" / "kar do" to a time you just offered → book_slot with that ISO.
-- User says "cancel" / "cancel kar do" / "don't want it anymore" → cancel_booking.
+- User says "cancel" / "cancel kar do" / "don't want it anymore" → cancel_booking (if multiple bookings, list_bookings first).
 - User says "reschedule" / "change time" / "move to X" → check_availability for X (if given) or ask; then reschedule_booking.
 - User says "when is my booking?" / "kya time hai meri booking?" → list_bookings.
+- User says "wapas book kar do" / "no that was the wrong one" / "undo" right after you cancelled → restore_booking.
 - Anything else → "none".
 
 STRICT TOOL NAME RULE:
-- booking_action.type MUST be exactly one of: "none", "check_availability", "book_slot", "list_bookings", "cancel_booking", "reschedule_booking".
+- booking_action.type MUST be exactly one of: "none", "check_availability", "book_slot", "list_bookings", "cancel_booking", "reschedule_booking", "restore_booking".
 - NEVER invent tool names like "get_slots", "show_slots", "availability", "confirm_booking", "delete_booking".
 - Exactly ONE action per turn. If two things are needed (e.g. check + book), take the FIRST step this turn and the next step on the next turn.`
   );
