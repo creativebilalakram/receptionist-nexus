@@ -478,6 +478,7 @@ async function processAndSend(
       messages: messages as unknown as Json,
       last_message_at: nowIso,
       current_stage: "open",
+      language: stickyLang.locked,
     }).select("id").single();
     if (insErr || !newRow) {
       console.error("[processAndSend] convo insert failed:", insErr);
