@@ -1674,7 +1674,7 @@ function scrubImaginaryOffers(text: string): string {
 
 
 
-function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean): string {
+function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean, lockedLang: LangCode = "en"): string {
   const blocks: string[] = [];
   const tz = client.timezone || "UTC";
   const now = new Date();
