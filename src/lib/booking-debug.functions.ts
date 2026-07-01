@@ -5,7 +5,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
-type AnySupabase = Parameters<typeof requireSupabaseAuth>[0] extends never ? any : any;
 
 async function assertOwnsClient(supabase: any, userId: string, clientId: string) {
   const { data, error } = await supabase
