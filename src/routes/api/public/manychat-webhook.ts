@@ -645,7 +645,7 @@ async function processAndSend(
   } else {
     const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
       ? parsedAI!.reply_parts!
-          .map((p) => (typeof p === "string" ? sanitizeReplyText(p) : ""))
+          .map((p) => (typeof p === "string" ? delistReplyText(sanitizeReplyText(p)) : ""))
           .filter((p) => p && p.trim().length > 0)
       : [];
     if (modelParts.length > 0) {
