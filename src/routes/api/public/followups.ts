@@ -21,23 +21,31 @@ export const Route = createFileRoute("/api/public/followups")({
         const minIdleMin = Math.max(5, Number(url.searchParams.get("min_idle_minutes")) || 60);
         const force = url.searchParams.get("force") === "1" || url.searchParams.get("force") === "true";
         const onlyPhone = url.searchParams.get("phone");
+        const maxFollowups = Math.max(1, Math.min(3, Number(url.searchParams.get("max_followups")) || 2));
+        const repeatGapHours = Math.max(6, Math.min(168, Number(url.searchParams.get("repeat_gap_hours")) || 24));
 
         const now = Date.now();
         const idleSince = new Date(now - minIdleMin * 60_000).toISOString();
         const windowStart = new Date(now - windowHours * 60 * 60_000).toISOString();
+        const repeatGapCutoff = new Date(now - repeatGapHours * 60 * 60_000).toISOString();
 
         let q = supabaseAdmin
           .from("conversations")
-          .select("id, client_id, subscriber_id, first_name, phone, messages, qualification, lead_score, status, current_stage, last_message_at, manual_takeover, escalated, followup_sent_at")
+          .select("id, client_id, subscriber_id, first_name, phone, messages, qualification, lead_score, status, current_stage, last_message_at, manual_takeover, escalated, followup_sent_at, followup_count")
           .eq("manual_takeover", false)
           .eq("escalated", false)
           .not("status", "in", "(booked,lost)")
           .lte("last_message_at", idleSince)
           .gte("last_message_at", windowStart)
+          .lt("followup_count", maxFollowups)
           .limit(100);
-        if (!force) q = q.is("followup_sent_at", null);
+        if (!force) {
+          // Either never followed up, OR last followup is older than repeat gap
+          q = q.or(`followup_sent_at.is.null,followup_sent_at.lte.${repeatGapCutoff}`);
+        }
         if (onlyPhone) q = q.eq("phone", onlyPhone);
         const { data: candidates, error } = await q;
+
 
 
         if (error) {
