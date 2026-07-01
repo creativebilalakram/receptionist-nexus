@@ -265,7 +265,9 @@ type ClientRow = {
   timezone: string | null;
   booking_link: string | null;
   system_prompt_override: string | null;
+  ai_model: string | null;
 };
+
 
 export const Route = createFileRoute("/api/public/manychat-webhook")({
   server: {
