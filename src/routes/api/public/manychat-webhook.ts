@@ -247,16 +247,22 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const first_name = sanitizePlaceholder(rawData.first_name ?? null);
         const rawMessageText = (rawData.message_text ?? rawData.last_input_text ?? "").trim();
         // FIX 3 — ManyChat greeting / placeholder scrub.
-        // ManyChat frequently ships the FIRST inbound as either an unresolved
-        // template ("{{first_name}}", "First Name", "[[phone]]") or its own
-        // canned opener the subscriber tapped ("Hi, I'd like to learn more...").
-        // We do three things:
-        //   1) strip unresolved {{...}} / [[...]] / <<...>> tokens
-        //   2) if the remaining text is empty / a bare placeholder word, treat
-        //      the message as an intent-to-start (so the premium opener fires
-        //      cleanly instead of the AI echoing the placeholder back)
-        //   3) hand the cleaned text downstream so the AI never quotes a token
-        const message_text = sanitizeInboundText(rawMessageText);
+        const cleanedText = sanitizeInboundText(rawMessageText);
+        // FIX 12 — MEDIA HANDLING
+        // ManyChat forwards WhatsApp voice notes / images / videos / files as
+        // attachments with either an empty `last_input_text` or a bare URL.
+        // Previously the webhook 400'd on empty text, so the user's voice
+        // note produced silence — user then repeats "voice ma" 3x, bot never
+        // acknowledges. Detect media, synthesize a marker so the AI sees it,
+        // and let the MEDIA HANDLING prompt block route the response.
+        const media = detectInboundMedia(rawData, rawMessageText);
+        let message_text = cleanedText;
+        if (media && (!message_text || message_text === "hi")) {
+          message_text = mediaMarkerText(media);
+        } else if (media && message_text) {
+          // Real text + a media attachment — append marker so AI acknowledges both.
+          message_text = `${message_text}\n${mediaMarkerText(media)}`;
+        }
 
         if (!client_id || !webhook_secret || !subscriber_id || !message_text) {
           await supabaseAdmin.from("webhook_logs").insert({
@@ -269,6 +275,13 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
             ].filter(Boolean).join(",")}`,
           });
           return new Response(JSON.stringify({ ai_reply: "", error: "invalid_payload" }), { status: 400, headers: cors });
+        }
+
+        if (media) {
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id, direction: "inbound", payload: { media, marker: message_text } as unknown as Json,
+            status_code: 200, error: `media_detected:${media.kind}`,
+          });
         }
 
         const data = { client_id, webhook_secret, subscriber_id, phone, first_name, message_text };
@@ -1339,6 +1352,96 @@ function sanitizeInboundText(raw: string): string {
   return stripped;
 }
 
+// FIX 12 — MEDIA HANDLING
+// Detect voice notes / images / videos / files / bare links so the AI
+// acknowledges them instead of ignoring the inbound.
+type InboundMediaKind = "voice" | "audio" | "image" | "video" | "file" | "link";
+type InboundMedia = { kind: InboundMediaKind; url?: string };
+
+const MEDIA_TYPE_MAP: Record<string, InboundMediaKind> = {
+  audio: "voice",
+  voice: "voice",
+  ptt: "voice",
+  image: "image",
+  photo: "image",
+  video: "video",
+  file: "file",
+  document: "file",
+  sticker: "image",
+};
+
+function pickAttachmentUrl(a: unknown): string | undefined {
+  if (!a || typeof a !== "object") return undefined;
+  const o = a as Record<string, unknown>;
+  const direct = typeof o.url === "string" ? o.url : undefined;
+  if (direct) return direct;
+  const payload = o.payload;
+  if (payload && typeof payload === "object") {
+    const pu = (payload as Record<string, unknown>).url;
+    if (typeof pu === "string") return pu;
+  }
+  return undefined;
+}
+
+function detectInboundMedia(raw: Record<string, unknown>, rawText: string): InboundMedia | null {
+  // 1) Explicit type fields ManyChat / WhatsApp forwards can carry.
+  const typeCandidates = [
+    raw.last_input_type, raw.last_message_type, raw.message_type, raw.type, raw.attachment_type,
+    raw.last_attachment_type,
+  ];
+  for (const t of typeCandidates) {
+    if (typeof t !== "string") continue;
+    const key = t.toLowerCase().trim();
+    const kind = MEDIA_TYPE_MAP[key];
+    if (kind) {
+      let url: string | undefined;
+      const attUrl = raw.last_attachment_url ?? raw.attachment_url ?? raw.media_url;
+      if (typeof attUrl === "string") url = attUrl;
+      return { kind, url };
+    }
+  }
+  // 2) Attachments array shape (ManyChat FB / IG relay style).
+  const attArrays: unknown[] = [];
+  if (Array.isArray(raw.attachments)) attArrays.push(...(raw.attachments as unknown[]));
+  if (Array.isArray(raw.last_input_attachments)) attArrays.push(...(raw.last_input_attachments as unknown[]));
+  for (const a of attArrays) {
+    if (!a || typeof a !== "object") continue;
+    const t = (a as Record<string, unknown>).type;
+    if (typeof t === "string") {
+      const kind = MEDIA_TYPE_MAP[t.toLowerCase()];
+      if (kind) return { kind, url: pickAttachmentUrl(a) };
+    }
+  }
+  // 3) Bare URL in the text (image/audio/video links). Only flag if the
+  //    text is essentially just the URL — otherwise treat as normal text.
+  const text = (rawText || "").trim();
+  const urlMatch = text.match(/https?:\/\/\S+/i);
+  if (urlMatch) {
+    const stripped = text.replace(urlMatch[0], "").trim();
+    if (stripped.length <= 3) {
+      const u = urlMatch[0].toLowerCase();
+      if (/\.(png|jpe?g|gif|webp|heic|bmp)(\?|$)/.test(u)) return { kind: "image", url: urlMatch[0] };
+      if (/\.(mp4|mov|webm|m4v)(\?|$)/.test(u)) return { kind: "video", url: urlMatch[0] };
+      if (/\.(mp3|m4a|ogg|opus|wav|aac)(\?|$)/.test(u)) return { kind: "voice", url: urlMatch[0] };
+      if (/\.(pdf|docx?|xlsx?|pptx?|zip)(\?|$)/.test(u)) return { kind: "file", url: urlMatch[0] };
+      return { kind: "link", url: urlMatch[0] };
+    }
+  }
+  return null;
+}
+
+function mediaMarkerText(m: InboundMedia): string {
+  switch (m.kind) {
+    case "voice": return "[user sent a voice note — no transcription available]";
+    case "audio": return "[user sent an audio clip — no transcription available]";
+    case "image": return `[user sent an image${m.url ? `: ${m.url}` : ""}]`;
+    case "video": return `[user sent a video${m.url ? `: ${m.url}` : ""}]`;
+    case "file":  return `[user sent a file${m.url ? `: ${m.url}` : ""}]`;
+    case "link":  return `[user shared a link${m.url ? `: ${m.url}` : ""}]`;
+  }
+}
+
+
 /**
  * FIX 2 — JSON leak guard.
  * The AI occasionally emits raw JSON (or a fenced ```json block, or a prose
@@ -1637,6 +1740,35 @@ preferred time as the alternative. Ban phrases like "video bhej doon",
 "case study bhejta hoon", "screenshot share kar doon".`
 
   );
+
+  // BLOCK 4B — MEDIA HANDLING (FIX 12)
+  blocks.push(
+    `MEDIA HANDLING (FIX 12 — voice notes, images, videos, files, links)
+The user's message may include a marker in square brackets such as:
+  [user sent a voice note — no transcription available]
+  [user sent an image: <url>]
+  [user sent a video: <url>]
+  [user sent a file: <url>]
+  [user shared a link: <url>]
+When you see any of these markers:
+- ACKNOWLEDGE the media in ONE short, warm line — never ignore it, never
+  pretend to have listened / watched / opened it, never guess its contents.
+- For a voice note: warmly ask them to type the key point in one line so
+  you can help fast (you cannot process audio). Match their language.
+  Example shape (write fresh, never verbatim): "got your voice note — mind
+  typing the main thing in one line so I can jump on it right away?"
+- For an image / video / file / link: acknowledge and ask ONE specific
+  question about what they'd like you to look at or what it relates to.
+  Example: "got the pic — what would you like me to check on this?"
+- NEVER quote the URL back to them. NEVER echo the marker text.
+- NEVER claim to have transcribed audio or seen image contents.
+- If they send voice notes 2+ times after you've asked them to type, set
+  escalate=true so a real person can pick up.
+- Do NOT abandon whatever stage you were in. After acknowledging the media,
+  continue the conversation naturally.`
+  );
+
+
 
   // BLOCK 5 — OBJECTION PROTOCOL
   blocks.push(
