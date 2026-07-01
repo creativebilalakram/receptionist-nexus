@@ -1021,16 +1021,79 @@ function safeParseAIJson(content: string): AIResponse | null {
   return null;
 }
 
+/**
+ * FIX 2 — JSON leak guard.
+ * The AI occasionally emits raw JSON (or a fenced ```json block, or a prose
+ * preamble + JSON) instead of plain text. Never let that reach WhatsApp.
+ * Strategy: detect any JSON-looking payload anywhere in the text, extract
+ * `reply` / `reply_parts` / `message`, and fall back to stripping fences.
+ * As a last resort, if the string still smells like JSON, return empty so
+ * the caller can substitute a safe fallback rather than shipping garbage.
+ */
 function sanitizeReplyText(text: string): string {
   if (!text) return text;
-  const trimmed = text.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("```")) {
-    const parsed = safeParseAIJson(trimmed);
-    if (parsed && typeof (parsed as { reply?: unknown }).reply === "string") {
-      return ((parsed as { reply: string }).reply).trim();
+  let out = text.trim();
+  if (!out) return out;
+
+  // 1) Strip ```json ... ``` (or plain ```) fences even mid-string.
+  const fence = out.match(/```(?:json|JSON)?\s*([\s\S]*?)```/);
+  if (fence) {
+    const inner = fence[1].trim();
+    // If the fenced content parses as JSON, unwrap fields; else use inner text.
+    const parsed = safeParseAIJson(inner);
+    if (parsed) {
+      const r = (parsed as { reply?: unknown; message?: unknown; reply_parts?: unknown }).reply
+        ?? (parsed as { message?: unknown }).message;
+      if (typeof r === "string" && r.trim()) return r.trim();
+      const rp = (parsed as { reply_parts?: unknown }).reply_parts;
+      if (Array.isArray(rp)) {
+        const joined = rp.filter((x) => typeof x === "string").join("\n\n").trim();
+        if (joined) return joined;
+      }
+    }
+    out = inner;
+  }
+
+  // 2) Whole-string JSON? Unwrap.
+  if (out.startsWith("{") || out.startsWith("[")) {
+    const parsed = safeParseAIJson(out);
+    if (parsed) {
+      const r = (parsed as { reply?: unknown; message?: unknown }).reply
+        ?? (parsed as { message?: unknown }).message;
+      if (typeof r === "string" && r.trim()) return r.trim();
+      const rp = (parsed as { reply_parts?: unknown }).reply_parts;
+      if (Array.isArray(rp)) {
+        const joined = rp.filter((x) => typeof x === "string").join("\n\n").trim();
+        if (joined) return joined;
+      }
     }
   }
-  return trimmed;
+
+  // 3) Embedded JSON blob (prose preamble + {...} tail, common Gemini leak).
+  const first = out.indexOf("{");
+  const last = out.lastIndexOf("}");
+  if (first !== -1 && last > first) {
+    const candidate = out.slice(first, last + 1);
+    const parsed = safeParseAIJson(candidate);
+    if (parsed && typeof (parsed as { reply?: unknown }).reply === "string") {
+      const r = (parsed as { reply: string }).reply.trim();
+      if (r) return r;
+    }
+  }
+
+  // 4) Kill any leftover key-looking fragments that would spook a user.
+  //    (e.g. "reply": "..." bleeding in.)
+  out = out
+    .replace(/^\s*"?(reply|reply_parts|message|ai_reply|tool_calls|tool_result)"?\s*:\s*/i, "")
+    .replace(/,?\s*"(tool_calls|reply_parts|reasoning|current_stage|escalate|qualification|lead_score)"\s*:[\s\S]*$/i, "")
+    .trim();
+
+  // 5) Last-resort smell test: if the payload still looks like JSON structure,
+  //    return empty so the caller substitutes a safe fallback.
+  if (/^[{\[]/.test(out) && /[}\]]$/.test(out) && /"\s*:\s*"/.test(out)) {
+    return "";
+  }
+  return out;
 }
 
 
