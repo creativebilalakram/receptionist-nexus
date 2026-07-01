@@ -1355,7 +1355,14 @@ function normalizeBookingAction(
       appointment_id: typeof action.appointment_id === "string" ? action.appointment_id : null,
       new_slot_iso_utc: iso,
     };
+  if (action.type === "restore_booking") {
+    return { type: "restore_booking" };
   }
+  if (["restore", "undo_cancel", "undo_cancellation", "unbook", "rebook_previous"].includes(action.type)) {
+    return { type: "restore_booking" };
+  }
+
+
 
   // Backward compatibility for older / provider-invented tool names.
   // This was the root cause of the stuck screenshot: OpenAI returned
