@@ -39,7 +39,7 @@ export const debugHardDeleteAppointment = createServerFn({ method: "POST" })
       client_id: data.clientId,
       direction: "system",
       status_code: 200,
-      request_payload: { marker: "manual_hard_delete_appointment", appointment_id: data.id, by_user: context.userId } as any,
+      payload: { marker: "manual_hard_delete_appointment", appointment_id: data.id, by_user: context.userId } as any,
     });
     return { ok: true };
   });
