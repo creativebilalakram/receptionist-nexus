@@ -1176,6 +1176,23 @@ function looksLikeExplicitBookingTurn(text: string, messages: Msg[]): boolean {
   return false;
 }
 
+function shouldBypassRepeatEscalation(
+  frustration: { escalate: boolean; reason: string } | null,
+  currentText: string,
+  priorHistory: Msg[],
+): boolean {
+  return frustration?.reason === "repeated_unresolved_ask"
+    && looksLikeExplicitBookingTurn(currentText, priorHistory);
+}
+
+function isRecoverableAutoRepeatEscalation(existing: ConvRow | null, currentText: string): boolean {
+  if (!existing?.escalated || existing.manual_takeover) return false;
+  const reason = String(existing.escalation_reason ?? "");
+  const wasAutoRepeatEscalation = reason.includes("repeated_unresolved_ask");
+  const history: Msg[] = Array.isArray(existing.messages) ? (existing.messages as unknown as Msg[]) : [];
+  return wasAutoRepeatEscalation && looksLikeExplicitBookingTurn(currentText, history);
+}
+
 function inferPreferredDateLabel(
   raw: Record<string, unknown>,
   messages: Msg[],
