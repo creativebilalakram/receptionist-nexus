@@ -532,7 +532,7 @@ async function processAndSend(
   // FIX 15B — detect exact-repeat user message within 5 minutes. If tripped,
   // inject a runtime fact into the prompt so the AI acknowledges the repeat
   // and offers a different angle (or handoff on the 3rd repeat).
-  const repeatInfo = detectRepeatUserMessage(data.message_text, messages);
+  const repeatInfo = detectRepeatUserMessage(data.message_text, priorHistory);
 
   const systemPrompt = buildSystemPrompt(
     client,
