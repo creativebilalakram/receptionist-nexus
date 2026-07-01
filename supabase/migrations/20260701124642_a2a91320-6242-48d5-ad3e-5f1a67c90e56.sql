@@ -1,0 +1,1 @@
+UPDATE public.clients SET is_active = false;
