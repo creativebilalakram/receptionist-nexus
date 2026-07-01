@@ -571,11 +571,12 @@ async function processAndSend(
         });
       }
       void driftCorrected;
-      } else {
+
+      if (validatedIso) {
         const result = await bookAppointment(supabaseAdmin, {
           clientId: client.id,
           meetingTypeId: null,
-          startIso: validatedIso!,
+          startIso: validatedIso,
           contactName: data.first_name ?? null,
           contactPhone: data.phone ?? null,
           contactEmail: action.contact_email ?? null,
