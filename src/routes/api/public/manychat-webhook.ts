@@ -1172,6 +1172,27 @@ function normalizeBookingAction(
       ? { type: "book_slot", slot_iso_utc: action.slot_iso_utc, contact_email: typeof action.contact_email === "string" ? action.contact_email : null }
       : { type: "none" };
   }
+  if (action.type === "list_bookings") {
+    return { type: "list_bookings" };
+  }
+  if (action.type === "cancel_booking") {
+    return {
+      type: "cancel_booking",
+      appointment_id: typeof action.appointment_id === "string" ? action.appointment_id : null,
+      reason: typeof action.reason === "string" ? action.reason : null,
+    };
+  }
+  if (action.type === "reschedule_booking") {
+    const iso = typeof action.new_slot_iso_utc === "string" ? action.new_slot_iso_utc
+      : typeof (action as Record<string, unknown>).slot_iso_utc === "string" ? String((action as Record<string, unknown>).slot_iso_utc)
+      : "";
+    if (!iso.trim()) return { type: "none" };
+    return {
+      type: "reschedule_booking",
+      appointment_id: typeof action.appointment_id === "string" ? action.appointment_id : null,
+      new_slot_iso_utc: iso,
+    };
+  }
 
   // Backward compatibility for older / provider-invented tool names.
   // This was the root cause of the stuck screenshot: OpenAI returned
@@ -1179,6 +1200,21 @@ function normalizeBookingAction(
   // executed availability lookup.
   if (["get_slots", "show_slots", "list_slots", "availability", "get_availability"].includes(action.type)) {
     return buildCheckAvailabilityAction(action, messages, lastUserText);
+  }
+  if (["cancel", "cancel_appointment", "cancel_meeting"].includes(action.type)) {
+    return { type: "cancel_booking", appointment_id: null, reason: null };
+  }
+  if (["reschedule", "reschedule_appointment", "move_booking", "change_booking"].includes(action.type)) {
+    const iso = typeof (action as Record<string, unknown>).new_slot_iso_utc === "string"
+      ? String((action as Record<string, unknown>).new_slot_iso_utc)
+      : typeof (action as Record<string, unknown>).slot_iso_utc === "string"
+        ? String((action as Record<string, unknown>).slot_iso_utc)
+        : "";
+    if (!iso.trim()) return { type: "none" };
+    return { type: "reschedule_booking", appointment_id: null, new_slot_iso_utc: iso };
+  }
+  if (["my_bookings", "list_appointments", "get_bookings", "upcoming"].includes(action.type)) {
+    return { type: "list_bookings" };
   }
 
   if (forceAvailabilityCheck) {
