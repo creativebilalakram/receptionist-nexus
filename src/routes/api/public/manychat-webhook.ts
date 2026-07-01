@@ -382,7 +382,8 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
           .from("conversations").select("*")
           .eq("client_id", client.id).eq("subscriber_id", data.subscriber_id).maybeSingle();
 
-        if (existing?.escalated || existing?.manual_takeover) {
+        const canRecoverAutoRepeatEscalation = isRecoverableAutoRepeatEscalation(existing, data.message_text);
+        if (existing?.manual_takeover || (existing?.escalated && !canRecoverAutoRepeatEscalation)) {
           const nowIso = new Date().toISOString();
           const msgs: Msg[] = Array.isArray(existing.messages) ? (existing.messages as unknown as Msg[]) : [];
           msgs.push({ role: "user", content: data.message_text, timestamp: nowIso });
@@ -495,7 +496,8 @@ async function processAndSend(
   // repetition check compares current vs the two before it.
   const priorHistory = messages.slice(0, -1);
   const frustration = detectFrustrationEscalation(data.message_text, priorHistory);
-  if (frustration?.escalate) {
+  const bypassRepeatEscalation = shouldBypassRepeatEscalation(frustration, data.message_text, priorHistory);
+  if (frustration?.escalate && !bypassRepeatEscalation) {
     const lang = detectLangHint(data.message_text);
     const handoff = handoffMessage(data.first_name ?? existing?.first_name ?? null, lang);
     const sendRes = await sendWhatsAppText(data.subscriber_id, handoff);
@@ -525,6 +527,18 @@ async function processAndSend(
       error: sendRes.ok ? null : sendRes.error,
     });
     return;
+  }
+  if (bypassRepeatEscalation) {
+    await supabaseAdmin.from("webhook_logs").insert({
+      client_id: client.id,
+      direction: "outbound",
+      payload: {
+        kind: "repeat_escalation_bypassed_for_booking",
+        reason: frustration?.reason ?? null,
+        user_text: data.message_text,
+      } as unknown as Json,
+      status_code: 200,
+    });
   }
 
   const isFirstEverMessage = priorMessageCount === 0;
@@ -608,6 +622,10 @@ async function processAndSend(
     status = parsedAI.status_change;
   }
   if (parsedAI?.stage) currentStage = parsedAI.stage;
+  const recoveringAutoRepeatEscalation = isRecoverableAutoRepeatEscalation(existing, data.message_text);
+  if (recoveringAutoRepeatEscalation && status === "escalated") {
+    status = "active";
+  }
   const bantKeys = ["budget", "authority", "need", "timing"] as const;
   leadScore = bantKeys.reduce((acc, k) => acc + (qualification[k] === true ? 25 : 0), 0);
 
@@ -989,6 +1007,13 @@ async function processAndSend(
     last_message_at: new Date().toISOString(),
     phone: data.phone ?? existing?.phone ?? null,
     first_name: data.first_name ?? existing?.first_name ?? null,
+    ...(recoveringAutoRepeatEscalation && !shouldEscalate
+      ? {
+          escalated: false,
+          escalation_reason: null,
+          escalated_at: null,
+        }
+      : {}),
     ...(shouldEscalate
       ? {
           escalated: true,
