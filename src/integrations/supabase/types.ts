@@ -312,6 +312,7 @@ export type Database = {
           escalated_at: string | null
           escalation_reason: string | null
           first_name: string | null
+          followup_count: number
           followup_sent_at: string | null
           id: string
           last_message_at: string | null
@@ -332,6 +333,7 @@ export type Database = {
           escalated_at?: string | null
           escalation_reason?: string | null
           first_name?: string | null
+          followup_count?: number
           followup_sent_at?: string | null
           id?: string
           last_message_at?: string | null
@@ -352,6 +354,7 @@ export type Database = {
           escalated_at?: string | null
           escalation_reason?: string | null
           first_name?: string | null
+          followup_count?: number
           followup_sent_at?: string | null
           id?: string
           last_message_at?: string | null
