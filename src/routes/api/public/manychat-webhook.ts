@@ -1170,36 +1170,48 @@ async function processAndSend(
 
 
     if (modelParts.length > 0) {
-      parts = modelParts.slice(0, 3); // hard cap 3 bubbles
+      parts = modelParts.slice(0, 2); // hard cap 2 bubbles (professional brevity)
     } else {
-      parts = autoSplitReply(aiReply).filter((p) => p && p.trim().length > 0);
+      parts = autoSplitReply(aiReply).filter((p) => p && p.trim().length > 0).slice(0, 2);
     }
   }
-  // FIX 7 — dedupe bubbles. Three sources of duplicate messages we've observed:
+  // FIX 7 — dedupe bubbles. Sources of duplicate/redundant messages:
   //   (a) model emits reply_parts with two near-identical entries
   //   (b) autoSplit produces adjacent parts whose normalized text matches
-  //   (c) one of the parts matches the ack we already sent this turn, or the
-  //       previous assistant bubble in history
+  //   (c) one of the parts matches the ack we already sent this turn, or a
+  //       recent assistant bubble in history (fuzzy — Jaccard ≥ 0.6)
+  //   (d) part is a low-value restatement of what the user just said
   // Skip for the premium opener (already single-bubble by design).
   if (!isFirstEverMessage && parts.length > 0) {
     const priorAssistant: string[] = [];
-    for (let i = messages.length - 1; i >= 0 && priorAssistant.length < 3; i--) {
+    for (let i = messages.length - 1; i >= 0 && priorAssistant.length < 4; i--) {
       if (messages[i].role === "assistant") priorAssistant.push(messages[i].content);
     }
     const seen = new Set<string>();
-    // Seed with recent history so we don't re-echo the last thing we sent.
     for (const m of priorAssistant) {
       const n = normalizeForCompare(m);
       if (n) seen.add(n);
     }
-    const deduped: string[] = [];
+    const isFuzzyDup = (candidate: string): boolean => {
+      for (const prev of priorAssistant) {
+        if (jaccardSimilarity(candidate, prev) >= 0.6) return true;
+      }
+      for (const kept of deduped) {
+        if (jaccardSimilarity(candidate, kept) >= 0.6) return true;
+      }
+      return false;
+    };
+    var deduped: string[] = [];
     for (const p of parts) {
       const n = normalizeForCompare(p);
       if (!n || seen.has(n)) continue;
+      if (isFuzzyDup(p)) continue;
       seen.add(n);
       deduped.push(p);
     }
     if (deduped.length > 0) parts = deduped;
+    // Enforce hard cap once more post-dedup
+    parts = parts.slice(0, 2);
   }
 
   // Final guard: never send empty
