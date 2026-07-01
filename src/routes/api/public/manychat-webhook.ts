@@ -45,8 +45,17 @@ type CheckAvailabilityAction =
     };
 
 type BookSlotAction = { type: "book_slot"; slot_iso_utc: string; contact_email?: string | null };
+type ListBookingsAction = { type: "list_bookings" };
+type CancelBookingAction = { type: "cancel_booking"; appointment_id?: string | null; reason?: string | null };
+type RescheduleBookingAction = { type: "reschedule_booking"; appointment_id?: string | null; new_slot_iso_utc: string };
 type NoBookingAction = { type: "none" };
-type NormalizedBookingAction = CheckAvailabilityAction | BookSlotAction | NoBookingAction;
+type NormalizedBookingAction =
+  | CheckAvailabilityAction
+  | BookSlotAction
+  | ListBookingsAction
+  | CancelBookingAction
+  | RescheduleBookingAction
+  | NoBookingAction;
 type BookingAction = NormalizedBookingAction | ({ type: string } & Record<string, unknown>);
 
 type AIResponse = {
@@ -644,7 +653,15 @@ async function processAndSend(
   // in the screenshot: AI emitted check_availability, the old guard discarded
   // it because status was already "booked", and only the holding bubble was
   // sent with no second availability/confirmation message.
-  if (action && action.type !== "none" && existing?.status === "booked" && !looksLikeExplicitBookingTurn(data.message_text, messages)) {
+  // Only suppress a NEW check_availability / book_slot on an already-booked
+  // convo when the user didn't clearly ask. List / cancel / reschedule are
+  // always legitimate on a booked conversation and must never be suppressed.
+  if (
+    action &&
+    (action.type === "check_availability" || action.type === "book_slot") &&
+    existing?.status === "booked" &&
+    !looksLikeExplicitBookingTurn(data.message_text, messages)
+  ) {
     await supabaseAdmin.from("webhook_logs").insert({
       client_id: client.id,
       direction: "outbound",
@@ -930,6 +947,117 @@ async function processAndSend(
           toolFinalReply = true;
         }
       }
+    } else if (action.type === "list_bookings") {
+      const { rescheduleAppointment: _rs } = await import("@/lib/booking-core.server");
+      void _rs;
+      const upcoming = await fetchUpcomingForConversation(supabaseAdmin, client.id, convoId ?? null);
+      aiReply = composeListBookingsReply(upcoming, data.message_text);
+      toolFinalReply = true;
+      await supabaseAdmin.from("webhook_logs").insert({
+        client_id: client.id,
+        direction: "outbound",
+        payload: { kind: "list_bookings", count: upcoming.length } as unknown as Json,
+        status_code: 200,
+      });
+    } else if (action.type === "cancel_booking") {
+      const target = await pickTargetAppointment(supabaseAdmin, client.id, convoId ?? null, action.appointment_id ?? null);
+      if (!target) {
+        aiReply = composeNoBookingFoundReply(data.message_text);
+        toolFinalReply = true;
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id,
+          direction: "outbound",
+          payload: { kind: "cancel_booking_none_found" } as unknown as Json,
+          status_code: 404,
+        });
+      } else {
+        const { cancelAppointment } = await import("@/lib/booking-core.server");
+        const res = await cancelAppointment(supabaseAdmin, target.id, action.reason ?? "cancelled by user via WhatsApp");
+        if (res.ok) {
+          if (status === "booked") status = "qualified";
+          aiReply = composeCancelSuccessReply(target.label, data.message_text);
+          toolFinalReply = true;
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id,
+            direction: "outbound",
+            payload: { kind: "cancel_booking_ok", appointment_id: target.id } as unknown as Json,
+            status_code: 200,
+          });
+        } else {
+          aiReply = pickAvailabilityFailureText(data.message_text);
+          toolFinalReply = true;
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id,
+            direction: "outbound",
+            payload: { kind: "cancel_booking_failed", error: res.error, appointment_id: target.id } as unknown as Json,
+            status_code: 422,
+          });
+        }
+      }
+    } else if (action.type === "reschedule_booking") {
+      const target = await pickTargetAppointment(supabaseAdmin, client.id, convoId ?? null, action.appointment_id ?? null);
+      const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
+      if (!target) {
+        aiReply = composeNoBookingFoundReply(data.message_text);
+        toolFinalReply = true;
+      } else if ("error" in ctx) {
+        aiReply = pickAvailabilityFailureText(data.message_text);
+        toolFinalReply = true;
+      } else {
+        // Validate the new ISO is a real slot; fall back to last_offered if needed.
+        const proposed = new Date(action.new_slot_iso_utc);
+        const proposedMs = proposed.getTime();
+        const nowMs = Date.now();
+        let validatedIso: string | null = null;
+        const tryMatch = (centerMs: number) => {
+          const rs = new Date(centerMs - 24 * 60 * 60_000);
+          const re = new Date(centerMs + 24 * 60 * 60_000);
+          const slots = generateSlots(ctx, rs, re, 200);
+          const hit = slots.find((s) => Math.abs(new Date(s.start).getTime() - centerMs) < 60_000);
+          return hit ? hit.start : null;
+        };
+        if (!Number.isNaN(proposedMs) && proposedMs > nowMs - 5 * 60_000) {
+          validatedIso = tryMatch(proposedMs);
+        }
+        if (!validatedIso && offeredSlotIso) {
+          const offMs = new Date(offeredSlotIso).getTime();
+          if (!Number.isNaN(offMs) && offMs > nowMs - 5 * 60_000) validatedIso = tryMatch(offMs);
+        }
+        if (!validatedIso) {
+          aiReply = pickBookingFailureText(data.message_text);
+          toolFinalReply = true;
+          await supabaseAdmin.from("webhook_logs").insert({
+            client_id: client.id,
+            direction: "outbound",
+            payload: { kind: "reschedule_slot_unavailable", proposed_iso: action.new_slot_iso_utc } as unknown as Json,
+            status_code: 422,
+          });
+        } else {
+          const { rescheduleAppointment } = await import("@/lib/booking-core.server");
+          const res = await rescheduleAppointment(supabaseAdmin, target.id, validatedIso);
+          if (res.ok) {
+            status = "booked";
+            const newLabel = formatSlotLabelInTz(new Date(validatedIso), ctx.timezone);
+            aiReply = composeRescheduleSuccessReply(target.label, newLabel, data.message_text);
+            toolFinalReply = true;
+            await supabaseAdmin.from("webhook_logs").insert({
+              client_id: client.id,
+              direction: "outbound",
+              payload: { kind: "reschedule_ok", appointment_id: target.id, new_iso: validatedIso } as unknown as Json,
+              status_code: 200,
+            });
+          } else {
+            aiReply = pickBookingFailureText(data.message_text);
+            toolFinalReply = true;
+            await supabaseAdmin.from("webhook_logs").insert({
+              client_id: client.id,
+              direction: "outbound",
+              payload: { kind: "reschedule_failed", error: res.error } as unknown as Json,
+              status_code: 422,
+            });
+          }
+        }
+      }
     }
   }
   // Mark that an ack was already pushed so the final send skips re-sending it.
@@ -1163,6 +1291,27 @@ function normalizeBookingAction(
       ? { type: "book_slot", slot_iso_utc: action.slot_iso_utc, contact_email: typeof action.contact_email === "string" ? action.contact_email : null }
       : { type: "none" };
   }
+  if (action.type === "list_bookings") {
+    return { type: "list_bookings" };
+  }
+  if (action.type === "cancel_booking") {
+    return {
+      type: "cancel_booking",
+      appointment_id: typeof action.appointment_id === "string" ? action.appointment_id : null,
+      reason: typeof action.reason === "string" ? action.reason : null,
+    };
+  }
+  if (action.type === "reschedule_booking") {
+    const iso = typeof action.new_slot_iso_utc === "string" ? action.new_slot_iso_utc
+      : typeof (action as Record<string, unknown>).slot_iso_utc === "string" ? String((action as Record<string, unknown>).slot_iso_utc)
+      : "";
+    if (!iso.trim()) return { type: "none" };
+    return {
+      type: "reschedule_booking",
+      appointment_id: typeof action.appointment_id === "string" ? action.appointment_id : null,
+      new_slot_iso_utc: iso,
+    };
+  }
 
   // Backward compatibility for older / provider-invented tool names.
   // This was the root cause of the stuck screenshot: OpenAI returned
@@ -1170,6 +1319,21 @@ function normalizeBookingAction(
   // executed availability lookup.
   if (["get_slots", "show_slots", "list_slots", "availability", "get_availability"].includes(action.type)) {
     return buildCheckAvailabilityAction(action, messages, lastUserText);
+  }
+  if (["cancel", "cancel_appointment", "cancel_meeting"].includes(action.type)) {
+    return { type: "cancel_booking", appointment_id: null, reason: null };
+  }
+  if (["reschedule", "reschedule_appointment", "move_booking", "change_booking"].includes(action.type)) {
+    const iso = typeof (action as Record<string, unknown>).new_slot_iso_utc === "string"
+      ? String((action as Record<string, unknown>).new_slot_iso_utc)
+      : typeof (action as Record<string, unknown>).slot_iso_utc === "string"
+        ? String((action as Record<string, unknown>).slot_iso_utc)
+        : "";
+    if (!iso.trim()) return { type: "none" };
+    return { type: "reschedule_booking", appointment_id: null, new_slot_iso_utc: iso };
+  }
+  if (["my_bookings", "list_appointments", "get_bookings", "upcoming"].includes(action.type)) {
+    return { type: "list_bookings" };
   }
 
   if (forceAvailabilityCheck) {
@@ -1401,6 +1565,112 @@ function pickAvailabilityFailureText(lastUserText: string): string {
   });
 }
 
+// ---------- List / cancel / reschedule helpers ----------
+
+type AppointmentTarget = { id: string; label: string; startIso: string };
+
+async function fetchUpcomingForConversation(
+  supabase: SupabaseAdmin,
+  clientId: string,
+  conversationId: string | null,
+): Promise<AppointmentTarget[]> {
+  const nowIso = new Date().toISOString();
+  let q = supabase.from("appointments")
+    .select("id, scheduled_at, status, meeting_type_id")
+    .eq("client_id", clientId)
+    .in("status", ["scheduled", "confirmed"])
+    .gte("scheduled_at", nowIso)
+    .order("scheduled_at", { ascending: true })
+    .limit(5);
+  if (conversationId) q = q.eq("conversation_id", conversationId);
+  const { data, error } = await q;
+  if (error || !data) return [];
+  const { data: cli } = await supabase.from("clients").select("timezone").eq("id", clientId).maybeSingle();
+  const tz = cli?.timezone || "UTC";
+  return data.map((a) => ({
+    id: a.id,
+    startIso: a.scheduled_at,
+    label: formatSlotLabelInTz(new Date(a.scheduled_at), tz),
+  }));
+}
+
+async function pickTargetAppointment(
+  supabase: SupabaseAdmin,
+  clientId: string,
+  conversationId: string | null,
+  explicitId: string | null,
+): Promise<AppointmentTarget | null> {
+  if (explicitId) {
+    const { data } = await supabase.from("appointments")
+      .select("id, scheduled_at").eq("id", explicitId).eq("client_id", clientId).maybeSingle();
+    if (data) {
+      const { data: cli } = await supabase.from("clients").select("timezone").eq("id", clientId).maybeSingle();
+      return { id: data.id, startIso: data.scheduled_at, label: formatSlotLabelInTz(new Date(data.scheduled_at), cli?.timezone || "UTC") };
+    }
+  }
+  const list = await fetchUpcomingForConversation(supabase, clientId, conversationId);
+  return list[0] ?? null;
+}
+
+function formatSlotLabelInTz(d: Date, tz: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, weekday: "short", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true,
+  }).format(d);
+}
+
+function composeListBookingsReply(list: AppointmentTarget[], lastUserText: string): string {
+  if (list.length === 0) return composeNoBookingFoundReply(lastUserText);
+  if (list.length === 1) {
+    const label = list[0].label;
+    return localizedText(lastUserText, {
+      roman: `Aap ki upcoming booking *${label}* pe hai. Reschedule ya cancel karni ho to bata dein.`,
+      english: `Your upcoming booking is on *${label}*. Want to reschedule or cancel?`,
+      urdu: `آپ کی upcoming booking *${label}* پر ہے۔ Reschedule یا cancel کرنی ہو تو بتائیں۔`,
+      hindi: `आपकी upcoming booking *${label}* पर है। Reschedule या cancel करनी हो तो बताएँ।`,
+      arabic: `حجزك القادم في *${label}*. تريد إعادة الجدولة أو الإلغاء؟`,
+    });
+  }
+  const first = list[0].label, second = list[1].label;
+  return localizedText(lastUserText, {
+    roman: `Aap ki upcoming bookings: *${first}* aur *${second}*. Kis pe kaam karna hai?`,
+    english: `Your upcoming bookings: *${first}* and *${second}*. Which one do you want to work on?`,
+    urdu: `آپ کی upcoming bookings: *${first}* اور *${second}*۔ کس پر کام کرنا ہے؟`,
+    hindi: `आपकी upcoming bookings: *${first}* और *${second}*। किस पर काम करना है?`,
+    arabic: `حجوزاتك القادمة: *${first}* و *${second}*. أيها تريد التعامل معه؟`,
+  });
+}
+
+function composeNoBookingFoundReply(lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: "Aap ki koi upcoming booking nahi mili. Nayi book karni ho to time bata dein.",
+    english: "I don’t see any upcoming booking on file. Want me to set one up?",
+    urdu: "آپ کی کوئی upcoming booking نہیں مل رہی۔ نئی book کرنی ہو تو time بتائیں۔",
+    hindi: "आपकी कोई upcoming booking नहीं मिल रही। नई book करनी हो तो time बताएँ।",
+    arabic: "لا أرى أي حجز قادم لك. تريد أن أرتب لك حجزاً جديداً؟",
+  });
+}
+
+function composeCancelSuccessReply(label: string, lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: `Ho gaya, *${label}* wali booking cancel kar di. Nayi time chahiye to bata dein.`,
+    english: `Done, your *${label}* booking has been cancelled. Want to pick a new time?`,
+    urdu: `ہو گیا، *${label}* والی booking cancel کر دی۔ نیا time چاہیے تو بتائیں۔`,
+    hindi: `हो गया, *${label}* वाली booking cancel कर दी। नया time चाहिए तो बताएँ।`,
+    arabic: `تم إلغاء حجز *${label}*. تريد اختيار وقت جديد؟`,
+  });
+}
+
+function composeRescheduleSuccessReply(oldLabel: string, newLabel: string, lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: `Ho gaya, *${oldLabel}* se move karke *${newLabel}* pe reschedule kar di.`,
+    english: `Done, moved from *${oldLabel}* to *${newLabel}*.`,
+    urdu: `ہو گیا، *${oldLabel}* سے *${newLabel}* پر reschedule کر دی۔`,
+    hindi: `हो गया, *${oldLabel}* से *${newLabel}* पर reschedule कर दी।`,
+    arabic: `تم النقل من *${oldLabel}* إلى *${newLabel}*.`,
+  });
+}
+
 function resolveSlotFromConversation(
   ctx: { timezone: string },
   messages: Msg[],
@@ -1494,32 +1764,64 @@ async function draftBookingReply(
 function pickAckText(
   aiFirstPass: string | undefined,
   lastUserText: string,
-  actionType: "check_availability" | "book_slot",
+  actionType: "check_availability" | "book_slot" | "list_bookings" | "cancel_booking" | "reschedule_booking",
 ): string {
   const candidate = (aiFirstPass ?? "").trim();
   // Use AI's holding phrase only if it's genuinely short (< 90 chars, 1 line).
   if (candidate && candidate.length <= 90 && !candidate.includes("\n")) {
     return candidate;
   }
-  // Detect script / language from the last user message.
   const t = lastUserText ?? "";
-  if (/[\u0600-\u06FF]/.test(t)) {
-    return actionType === "book_slot" ? "ایک سیکنڈ، بُک کر رہا ہوں…" : "ایک سیکنڈ، چیک کرتا ہوں…";
-  }
-  if (/[\u0900-\u097F]/.test(t)) {
-    return actionType === "book_slot" ? "एक सेकंड, बुक कर रहा हूँ…" : "एक सेकंड, चेक करता हूँ…";
-  }
-  if (/[\u0621-\u064A]/.test(t)) {
-    return actionType === "book_slot" ? "لحظة، أحجز لك الآن…" : "لحظة، أتحقق لك…";
-  }
-  // Roman Urdu heuristic
+  const verbFor = (
+    lang: "roman" | "english" | "urdu" | "hindi" | "arabic",
+  ): string => {
+    const map: Record<typeof lang, Record<typeof actionType, string>> = {
+      roman: {
+        check_availability: "ek sec, *check* karta hun…",
+        book_slot: "ek sec, *book* kar raha hun…",
+        list_bookings: "ek sec, *bookings* nikaal raha hun…",
+        cancel_booking: "ek sec, *cancel* kar raha hun…",
+        reschedule_booking: "ek sec, *reschedule* kar raha hun…",
+      },
+      english: {
+        check_availability: "one sec, let me *check*…",
+        book_slot: "one sec, *booking* it now…",
+        list_bookings: "one sec, pulling up your *bookings*…",
+        cancel_booking: "one sec, *cancelling* now…",
+        reschedule_booking: "one sec, *rescheduling* now…",
+      },
+      urdu: {
+        check_availability: "ایک سیکنڈ، چیک کرتا ہوں…",
+        book_slot: "ایک سیکنڈ، بُک کر رہا ہوں…",
+        list_bookings: "ایک سیکنڈ، آپ کی bookings دیکھتا ہوں…",
+        cancel_booking: "ایک سیکنڈ، cancel کر رہا ہوں…",
+        reschedule_booking: "ایک سیکنڈ، reschedule کر رہا ہوں…",
+      },
+      hindi: {
+        check_availability: "एक सेकंड, चेक करता हूँ…",
+        book_slot: "एक सेकंड, बुक कर रहा हूँ…",
+        list_bookings: "एक सेकंड, आपकी bookings देखता हूँ…",
+        cancel_booking: "एक सेकंड, cancel कर रहा हूँ…",
+        reschedule_booking: "एक सेकंड, reschedule कर रहा हूँ…",
+      },
+      arabic: {
+        check_availability: "لحظة، أتحقق لك…",
+        book_slot: "لحظة، أحجز لك الآن…",
+        list_bookings: "لحظة، أجلب حجوزاتك…",
+        cancel_booking: "لحظة، ألغي الحجز الآن…",
+        reschedule_booking: "لحظة، أعيد الجدولة الآن…",
+      },
+    };
+    return map[lang][actionType];
+  };
+  if (/[\u0600-\u06FF]/.test(t)) return verbFor("urdu");
+  if (/[\u0900-\u097F]/.test(t)) return verbFor("hindi");
+  if (/[\u0621-\u064A]/.test(t)) return verbFor("arabic");
   const lower = t.toLowerCase();
   const romanHits = ["kya", "ka ", "ko ", " ma ", " ha ", "kar", "mujh", "mera", "kasa", "btao", "thora", "abi", "nahi"]
     .filter((w) => lower.includes(w)).length;
-  if (romanHits >= 2) {
-    return actionType === "book_slot" ? "ek sec, *book* kar raha hun…" : "ek sec, *check* karta hun…";
-  }
-  return actionType === "book_slot" ? "one sec, *booking* it now…" : "one sec, let me *check*…";
+  if (romanHits >= 2) return verbFor("roman");
+  return verbFor("english");
 }
 
 /**
@@ -2192,6 +2494,9 @@ Respond with ONLY a JSON object, no markdown fences, no prose:
       { "type": "none" }
     | { "type": "check_availability", "user_stated_time": "<verbatim>", "preferred_date_label": "<label?>", "preferred_time_window": "morning|afternoon|evening|specific_time|any", "specific_time_local": "<HH:MM|null>" }
     | { "type": "book_slot", "slot_iso_utc": "<iso>", "contact_email": "<email|null>" }
+    | { "type": "list_bookings" }
+    | { "type": "cancel_booking", "appointment_id": "<id|null>", "reason": "<short reason|null>" }
+    | { "type": "reschedule_booking", "appointment_id": "<id|null>", "new_slot_iso_utc": "<iso>" }
 }
 
 REPLY_PARTS RULES:
@@ -2200,9 +2505,47 @@ REPLY_PARTS RULES:
 - Each bubble independently follows tone rules (short, *bold* keywords, no dashes, mirrored language).
 - "reply" should still contain the full text (parts joined) as a fallback.
 
+TOOL CATALOG — pick ONE action per turn. The backend runs it and returns real data. Never fabricate the result.
+
+1) "none"
+   USE WHEN: any turn that does not need to touch the calendar (chat, discovery, objections, general questions, small talk, confirmations after a successful booking).
+
+2) "check_availability"  →  is this time free? what alternatives exist?
+   USE WHEN: user asks about a time / a date / "kya available hai" / "when can we meet" / gives a specific time / says "morning" / "evening" / etc.
+   FIELDS: user_stated_time (their exact phrase), preferred_date_label ("tomorrow" | "friday" | "2026-07-03"...), preferred_time_window ("morning"|"afternoon"|"evening"|"specific_time"|"any"), specific_time_local ("14:00" or null).
+   BACKEND RETURNS: exact_available (bool), exact_slot, alternatives[], window_empty. You then confirm or offer 1-2 alternatives in prose.
+
+3) "book_slot"  →  actually create the appointment.
+   USE WHEN: user has clearly said YES to a specific time you (or they) previously proposed and that time appeared in a check_availability tool result THIS conversation.
+   FIELDS: slot_iso_utc (must be the exact ISO from the most recent check_availability result — never invent), contact_email (if you already collected it, else null).
+   HARD RULE: never emit book_slot without a recent successful check_availability. If unsure, run check_availability first.
+
+4) "list_bookings"  →  what does this contact currently have booked?
+   USE WHEN: user asks "kya meri booking hai?", "when is my demo?", "check my appointment", or before offering to cancel/reschedule and you don't already have the appointment in mind.
+   NO FIELDS.
+
+5) "cancel_booking"  →  cancel an existing appointment.
+   USE WHEN: user clearly says "cancel my booking" / "cancel kar do" / "I want to cancel" / "meeting cancel". If they haven't said which one and multiple exist, run list_bookings first.
+   FIELDS: appointment_id (null = cancel their soonest upcoming), reason (short natural reason, optional).
+
+6) "reschedule_booking"  →  move an existing appointment to a new time.
+   USE WHEN: user wants to change the time of an existing booking AND has confirmed the new time (which must have come from a recent check_availability result).
+   FLOW: (a) if you don't know the new time yet, run check_availability first. (b) once they confirm, emit reschedule_booking with new_slot_iso_utc.
+   FIELDS: appointment_id (null = reschedule their soonest upcoming), new_slot_iso_utc (exact ISO from the recent check_availability).
+
+DECISION SHORTCUTS:
+- User asks "kya available hai / any slots / kab free ho" → check_availability.
+- User says a specific time ("Wed 4pm", "kal 11am") → check_availability with that time.
+- User replies "haan" / "yes" / "kar do" to a time you just offered → book_slot with that ISO.
+- User says "cancel" / "cancel kar do" / "don't want it anymore" → cancel_booking.
+- User says "reschedule" / "change time" / "move to X" → check_availability for X (if given) or ask; then reschedule_booking.
+- User says "when is my booking?" / "kya time hai meri booking?" → list_bookings.
+- Anything else → "none".
+
 STRICT TOOL NAME RULE:
-- booking_action.type MUST be exactly one of: "none", "check_availability", "book_slot".
-- NEVER invent tool names like "get_slots", "show_slots", "availability", or "confirm_booking".`
+- booking_action.type MUST be exactly one of: "none", "check_availability", "book_slot", "list_bookings", "cancel_booking", "reschedule_booking".
+- NEVER invent tool names like "get_slots", "show_slots", "availability", "confirm_booking", "delete_booking".
+- Exactly ONE action per turn. If two things are needed (e.g. check + book), take the FIRST step this turn and the next step on the next turn.`
   );
 
   // BLOCK 8B — RUNTIME FACTS (FIX 15B and future dynamic hints)
