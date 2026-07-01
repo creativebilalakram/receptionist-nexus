@@ -630,6 +630,12 @@ async function processAndSend(
     aiReply = pickPostAckFiller(data.message_text);
   }
 
+  // FIX 6: de-list — convert any numbered / bulleted list into flowing prose.
+  // Skip the premium opener; its "• " bullets are intentional and structural.
+  if (!isFirstEverMessage) {
+    aiReply = delistReplyText(aiReply);
+  }
+
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
   // FIX 1: the premium first-message opener MUST arrive as ONE bubble so the
   // closing question is never dropped by autoSplit or a delivery hiccup.
