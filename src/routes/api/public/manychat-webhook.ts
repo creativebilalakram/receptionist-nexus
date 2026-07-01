@@ -1072,7 +1072,7 @@ function normalizeBookingAction(
   lastUserText: string,
 ): NormalizedBookingAction | undefined {
   if (!action) {
-    return ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)
+    return (ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)) || looksLikeExplicitBookingTurn(lastUserText, messages)
       ? buildCheckAvailabilityAction({}, messages, lastUserText)
       : undefined;
   }
@@ -1168,7 +1168,32 @@ function inferPreferredDateLabel(
   const weekday = recent.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
   if (weekday) return weekday[1];
   const iso = recent.match(/\b\d{4}-\d{2}-\d{2}\b/);
-  return iso?.[0] ?? null;
+  if (iso) return iso[0];
+  return inferDayOfMonthDateLabel(recent);
+}
+
+function inferDayOfMonthDateLabel(text: string): string | null {
+  const t = (text ?? "").toLowerCase();
+  const matches = [...t.matchAll(/(?:\b(?:on|for|date|day|tareekh|tarikh|ko|ka|at)\s+)?\b([1-9]|[12]\d|3[01])(st|nd|rd|th)?\b(?!\s*(?:am|pm|:))/g)];
+  for (const m of matches) {
+    const raw = m[0];
+    const suffix = !!m[2];
+    const hasDateContext = /\b(on|for|date|day|tareekh|tarikh|ko|ka|at)\b/.test(raw);
+    if (!suffix && !hasDateContext) continue;
+
+    const day = parseInt(m[1], 10);
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const month = now.getUTCMonth();
+    let candidate = new Date(Date.UTC(y, month, day, 12));
+    if (candidate.getUTCMonth() !== month) continue;
+    if (candidate.getTime() < now.getTime() - 24 * 60 * 60_000) {
+      candidate = new Date(Date.UTC(y, month + 1, day, 12));
+      if (candidate.getUTCDate() !== day) continue;
+    }
+    return candidate.toISOString().slice(0, 10);
+  }
+  return null;
 }
 
 function inferTimeWindow(text: string, specific: string | null): CheckAvailabilityAction["preferred_time_window"] {
