@@ -654,6 +654,33 @@ async function processAndSend(
       parts = autoSplitReply(aiReply).filter((p) => p && p.trim().length > 0);
     }
   }
+  // FIX 7 — dedupe bubbles. Three sources of duplicate messages we've observed:
+  //   (a) model emits reply_parts with two near-identical entries
+  //   (b) autoSplit produces adjacent parts whose normalized text matches
+  //   (c) one of the parts matches the ack we already sent this turn, or the
+  //       previous assistant bubble in history
+  // Skip for the premium opener (already single-bubble by design).
+  if (!isFirstEverMessage && parts.length > 0) {
+    const priorAssistant: string[] = [];
+    for (let i = messages.length - 1; i >= 0 && priorAssistant.length < 3; i--) {
+      if (messages[i].role === "assistant") priorAssistant.push(messages[i].content);
+    }
+    const seen = new Set<string>();
+    // Seed with recent history so we don't re-echo the last thing we sent.
+    for (const m of priorAssistant) {
+      const n = normalizeForCompare(m);
+      if (n) seen.add(n);
+    }
+    const deduped: string[] = [];
+    for (const p of parts) {
+      const n = normalizeForCompare(p);
+      if (!n || seen.has(n)) continue;
+      seen.add(n);
+      deduped.push(p);
+    }
+    if (deduped.length > 0) parts = deduped;
+  }
+
   // Final guard: never send empty
   if (parts.length === 0) parts = [aiReply];
 
