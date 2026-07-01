@@ -1808,7 +1808,7 @@ async function draftBookingReply(
 function pickAckText(
   aiFirstPass: string | undefined,
   lastUserText: string,
-  actionType: "check_availability" | "book_slot" | "list_bookings" | "cancel_booking" | "reschedule_booking",
+  actionType: "check_availability" | "book_slot" | "list_bookings" | "cancel_booking" | "reschedule_booking" | "restore_booking",
 ): string {
   const candidate = (aiFirstPass ?? "").trim();
   // Use AI's holding phrase only if it's genuinely short (< 90 chars, 1 line).
