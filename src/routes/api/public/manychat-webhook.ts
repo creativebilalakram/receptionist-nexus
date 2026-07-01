@@ -45,8 +45,17 @@ type CheckAvailabilityAction =
     };
 
 type BookSlotAction = { type: "book_slot"; slot_iso_utc: string; contact_email?: string | null };
+type ListBookingsAction = { type: "list_bookings" };
+type CancelBookingAction = { type: "cancel_booking"; appointment_id?: string | null; reason?: string | null };
+type RescheduleBookingAction = { type: "reschedule_booking"; appointment_id?: string | null; new_slot_iso_utc: string };
 type NoBookingAction = { type: "none" };
-type NormalizedBookingAction = CheckAvailabilityAction | BookSlotAction | NoBookingAction;
+type NormalizedBookingAction =
+  | CheckAvailabilityAction
+  | BookSlotAction
+  | ListBookingsAction
+  | CancelBookingAction
+  | RescheduleBookingAction
+  | NoBookingAction;
 type BookingAction = NormalizedBookingAction | ({ type: string } & Record<string, unknown>);
 
 type AIResponse = {
