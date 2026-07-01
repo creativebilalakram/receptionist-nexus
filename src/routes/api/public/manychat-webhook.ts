@@ -1352,6 +1352,96 @@ function sanitizeInboundText(raw: string): string {
   return stripped;
 }
 
+// FIX 12 — MEDIA HANDLING
+// Detect voice notes / images / videos / files / bare links so the AI
+// acknowledges them instead of ignoring the inbound.
+type InboundMediaKind = "voice" | "audio" | "image" | "video" | "file" | "link";
+type InboundMedia = { kind: InboundMediaKind; url?: string };
+
+const MEDIA_TYPE_MAP: Record<string, InboundMediaKind> = {
+  audio: "voice",
+  voice: "voice",
+  ptt: "voice",
+  image: "image",
+  photo: "image",
+  video: "video",
+  file: "file",
+  document: "file",
+  sticker: "image",
+};
+
+function pickAttachmentUrl(a: unknown): string | undefined {
+  if (!a || typeof a !== "object") return undefined;
+  const o = a as Record<string, unknown>;
+  const direct = typeof o.url === "string" ? o.url : undefined;
+  if (direct) return direct;
+  const payload = o.payload;
+  if (payload && typeof payload === "object") {
+    const pu = (payload as Record<string, unknown>).url;
+    if (typeof pu === "string") return pu;
+  }
+  return undefined;
+}
+
+function detectInboundMedia(raw: Record<string, unknown>, rawText: string): InboundMedia | null {
+  // 1) Explicit type fields ManyChat / WhatsApp forwards can carry.
+  const typeCandidates = [
+    raw.last_input_type, raw.last_message_type, raw.message_type, raw.type, raw.attachment_type,
+    raw.last_attachment_type,
+  ];
+  for (const t of typeCandidates) {
+    if (typeof t !== "string") continue;
+    const key = t.toLowerCase().trim();
+    const kind = MEDIA_TYPE_MAP[key];
+    if (kind) {
+      let url: string | undefined;
+      const attUrl = raw.last_attachment_url ?? raw.attachment_url ?? raw.media_url;
+      if (typeof attUrl === "string") url = attUrl;
+      return { kind, url };
+    }
+  }
+  // 2) Attachments array shape (ManyChat FB / IG relay style).
+  const attArrays: unknown[] = [];
+  if (Array.isArray(raw.attachments)) attArrays.push(...(raw.attachments as unknown[]));
+  if (Array.isArray(raw.last_input_attachments)) attArrays.push(...(raw.last_input_attachments as unknown[]));
+  for (const a of attArrays) {
+    if (!a || typeof a !== "object") continue;
+    const t = (a as Record<string, unknown>).type;
+    if (typeof t === "string") {
+      const kind = MEDIA_TYPE_MAP[t.toLowerCase()];
+      if (kind) return { kind, url: pickAttachmentUrl(a) };
+    }
+  }
+  // 3) Bare URL in the text (image/audio/video links). Only flag if the
+  //    text is essentially just the URL — otherwise treat as normal text.
+  const text = (rawText || "").trim();
+  const urlMatch = text.match(/https?:\/\/\S+/i);
+  if (urlMatch) {
+    const stripped = text.replace(urlMatch[0], "").trim();
+    if (stripped.length <= 3) {
+      const u = urlMatch[0].toLowerCase();
+      if (/\.(png|jpe?g|gif|webp|heic|bmp)(\?|$)/.test(u)) return { kind: "image", url: urlMatch[0] };
+      if (/\.(mp4|mov|webm|m4v)(\?|$)/.test(u)) return { kind: "video", url: urlMatch[0] };
+      if (/\.(mp3|m4a|ogg|opus|wav|aac)(\?|$)/.test(u)) return { kind: "voice", url: urlMatch[0] };
+      if (/\.(pdf|docx?|xlsx?|pptx?|zip)(\?|$)/.test(u)) return { kind: "file", url: urlMatch[0] };
+      return { kind: "link", url: urlMatch[0] };
+    }
+  }
+  return null;
+}
+
+function mediaMarkerText(m: InboundMedia): string {
+  switch (m.kind) {
+    case "voice": return "[user sent a voice note — no transcription available]";
+    case "audio": return "[user sent an audio clip — no transcription available]";
+    case "image": return `[user sent an image${m.url ? `: ${m.url}` : ""}]`;
+    case "video": return `[user sent a video${m.url ? `: ${m.url}` : ""}]`;
+    case "file":  return `[user sent a file${m.url ? `: ${m.url}` : ""}]`;
+    case "link":  return `[user shared a link${m.url ? `: ${m.url}` : ""}]`;
+  }
+}
+
+
 /**
  * FIX 2 — JSON leak guard.
  * The AI occasionally emits raw JSON (or a fenced ```json block, or a prose
