@@ -2488,23 +2488,25 @@ foreign word or English loanword inside their sentence is NOT a language switch.
   // closing question). Keep total under 500 chars.
   if (isFirstEverMessage) {
     blocks.push(
-      `FIRST MESSAGE ONLY — this is the very first message in this conversation (no prior history). Do NOT use the standard Stage 1 single-question opener. Send ONE premium message (delivered as ONE WhatsApp bubble) with this EXACT structure — use SINGLE line-breaks only, NEVER a blank line between sections:
-Line 1: a sharp, curiosity-triggering HOOK${firstName ? ` that can use their first name (${firstName}) naturally, but only if it fits` : ""} — something that makes them WANT to reply. A pointed observation, a bold outcome statement, or a direct value line about what ${client.business_name} unlocks for a business like theirs. NOT a greeting. NOT a welcome. NOT a "nice to meet you". NOT a thank-you-for-reaching-out.
-Line 2: • <short outcome-focused capability of ${client.business_name}, no trailing period>
-Line 3: • <second capability, no trailing period>
-Line 4: • <third capability, no trailing period>
-Line 5: ONE warm, specific, open discovery question that pulls them into a real conversation (e.g. what they run, biggest bottleneck right now, what made them message today). Must feel like a curious human — not a form field.
+      `FIRST MESSAGE ONLY — this is the very first message in this conversation (no prior history). Send ONE short, premium WhatsApp bubble (single bubble). Structure:
+Line 1: a sharp, curiosity-triggering HOOK${firstName ? ` that may use their first name (${firstName}) naturally if it fits` : ""} — a pointed observation, a bold outcome, or a specific pain that fits ${client.business_name}'s niche (use ICP context). NOT a greeting. NOT "welcome". NOT "nice to meet you". NOT "thanks for reaching out".
+Line 2 (optional, only if it truly adds value): one crisp sentence that hints WHY that hook matters for a business like theirs. Human, not salesy.
+Last line: ONE warm, specific, open discovery question that pulls them into a real conversation (what they run, biggest bottleneck right now, what made them message today).
+
 HARD RULES for this opener:
-- Total message MUST be under 500 characters.
-- Use SINGLE newlines (\\n) between every line. NEVER emit a blank line / double newline anywhere — that would split the message into separate bubbles and the closing question would be lost.
+- Total message MUST be under 260 characters. Shorter is better. A sharp receptionist opens with 1-2 crisp lines, never a paragraph.
+- Absolutely NO bullet points, NO "•", NO "-", NO "*" list markers, NO numbered lists, NO capability lists, NO feature dumps. This is a conversation opener, not a brochure. If you feel the urge to list 3 capabilities, DELETE them and ask a better question instead.
+- Use SINGLE newlines between lines. NEVER a blank line / double newline. Max 3 lines total.
 - Do NOT emit reply_parts for this opener. Put the entire opener into the single "reply" field.
-- Use "• " (bullet + space) for the three bullets, not markdown dashes.
-- No exclamation spam. Confident, unhurried premium tone.
-- BANNED opener phrases (in ANY language — Roman Urdu, Urdu, Hindi, English, Arabic). Do NOT start Line 1 with, or include anywhere in Line 1, any of: "aap ka swagat hai", "apka swagat hai", "khush aamdeed", "aap sa mil ka acha laga", "aap se milkar khushi hui", "aap ka yahaan aana acha laga", "aap ka yahan aana acha laga", "salam ... acha laga", "welcome to", "nice to meet you", "glad to have you here", "great to have you", "thanks for reaching out", "shukriya rabta karne ka", "pleased to meet you", or any translation/variant of welcome / nice-to-meet-you / glad-you're-here / thanks-for-messaging. These sycophantic greetings say NOTHING and kill conversion. Do NOT translate them into Roman Urdu either. Note: even the English versions ("glad to have you here" etc.) are banned as openers — the first line must EARN the reply, not perform politeness.
-- Instead, open Line 1 with SUBSTANCE: a crisp value hook, a smart observation about their world, or a direct outcome/pain statement that hits their reality. The hook must be specific to ${client.business_name}'s niche (use ICP context from Block 1) — never generic "we help businesses grow" fluff.
-- Examples of the SHAPE only (do NOT copy verbatim, adapt to the business and the lead's language): "Har missed WhatsApp = ek lost booking${firstName ? `, ${firstName}` : ""}. Wahi hum fix karte hain." / "Most ${(client.business_name || "").toLowerCase().includes("salon") ? "salons" : "businesses"} 30% leads sirf isliye lose karte hain kyunki reply late hota hai." / "24/7 receptionist ke bina aaj ke time salon chalana = paisa table pe chorna."
-- If the lead's first message is in Roman Urdu / Urdu / Hindi, write the opener in Roman Urdu. If it's in English, write it in English. Mirror their language — but keep the hook substantive in EITHER language.
-After this first message, all future replies follow the normal Stage 1-7 flow below. This special structure applies ONLY to message #1, never again.`
+- No exclamation spam. Confident, unhurried, premium tone. Sound like a smart human, not a landing page.
+- BANNED opener phrases (ANY language): "aap ka swagat hai", "apka swagat hai", "khush aamdeed", "aap sa mil ka acha laga", "aap se milkar khushi hui", "welcome to", "welcome", "nice to meet you", "glad to have you here", "great to have you", "thanks for reaching out", "shukriya rabta karne ka", "pleased to meet you", or any translation/variant. These say NOTHING and kill conversion.
+- Instead, open with SUBSTANCE specific to ${client.business_name}'s niche.
+- SHAPE examples (do NOT copy verbatim — adapt to the business + the lead's language, keep it SHORT):
+  "Har missed WhatsApp ek lost booking hai${firstName ? `, ${firstName}` : ""} — wahi hum fix karte hain. Aap ka setup abhi kaisa chal raha hai?"
+  "Most salons lose bookings just because replies come late at night. What's the biggest gap in yours right now?"
+  "Aksar businesses 30% leads slow reply ki wajah se lose karte hain. Aap ke end pe abhi kya sabse zyada waqt kha raha hai?"
+- If the lead's first message is in Roman Urdu / Urdu / Hindi, write the opener in that language. If English, write English. Mirror their language — keep the hook substantive in either.
+After this first message, all future replies follow the normal Stage 1-7 flow. This structure applies ONLY to message #1.`
     );
   }
 
