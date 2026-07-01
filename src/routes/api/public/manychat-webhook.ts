@@ -397,6 +397,46 @@ async function processAndSend(
     convoId = newRow.id;
   }
 
+  // FIX 11 — code-level frustration / handoff escalation.
+  // Runs BEFORE the AI call. If tripped, we skip the AI entirely, send a
+  // localized handoff bubble, mark the conversation escalated, and return.
+  // `messages` currently includes the just-pushed user turn as its last item;
+  // pass the prior history (everything except the current message) so the
+  // repetition check compares current vs the two before it.
+  const priorHistory = messages.slice(0, -1);
+  const frustration = detectFrustrationEscalation(data.message_text, priorHistory);
+  if (frustration?.escalate) {
+    const lang = detectLangHint(data.message_text);
+    const handoff = handoffMessage(data.first_name ?? existing?.first_name ?? null, lang);
+    const sendRes = await sendWhatsAppText(data.subscriber_id, handoff);
+    const nowIso2 = new Date().toISOString();
+    messages.push({ role: "assistant", content: handoff, timestamp: nowIso2 });
+    await supabaseAdmin.from("conversations").update({
+      messages: messages as unknown as Json,
+      status: "escalated",
+      escalated: true,
+      escalation_reason: `auto: ${frustration.reason}`,
+      escalated_at: nowIso2,
+      last_message_at: nowIso2,
+      phone: data.phone ?? existing?.phone ?? null,
+      first_name: data.first_name ?? existing?.first_name ?? null,
+    }).eq("id", convoId!);
+    await supabaseAdmin.from("webhook_logs").insert({
+      client_id: client.id,
+      direction: "outbound",
+      payload: {
+        reply: handoff,
+        kind: "auto_escalation",
+        reason: frustration.reason,
+        lang,
+      } as unknown as Json,
+      response: { manychat: sendRes.body ?? null } as Json,
+      status_code: sendRes.ok ? 200 : (sendRes.status || 500),
+      error: sendRes.ok ? null : sendRes.error,
+    });
+    return;
+  }
+
   const isFirstEverMessage = priorMessageCount === 0;
   const systemPrompt = buildSystemPrompt(client, data.first_name ?? null, isFirstEverMessage);
   const aiMessages = [
