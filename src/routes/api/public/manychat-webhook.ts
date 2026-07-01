@@ -528,7 +528,29 @@ async function processAndSend(
   }
 
   const isFirstEverMessage = priorMessageCount === 0;
-  const systemPrompt = buildSystemPrompt(client, data.first_name ?? null, isFirstEverMessage, stickyLang.locked);
+
+  // FIX 15B — detect exact-repeat user message within 5 minutes. If tripped,
+  // inject a runtime fact into the prompt so the AI acknowledges the repeat
+  // and offers a different angle (or handoff on the 3rd repeat).
+  const repeatInfo = detectRepeatUserMessage(data.message_text, messages);
+
+  const systemPrompt = buildSystemPrompt(
+    client,
+    data.first_name ?? null,
+    isFirstEverMessage,
+    stickyLang.locked,
+    repeatInfo.runtimeFact,
+  );
+
+  // FIX 14 Layer 1 — 25s watchdog. If the AI + tool loop stalls past 25s,
+  // fire a localized "still working — one more moment" bubble ONCE so the
+  // user never sees pure silence. Processing continues to eventual completion.
+  let watchdogFired = false;
+  const watchdogTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+    watchdogFired = true;
+    void sendWhatsAppText(data.subscriber_id, localizedStillWorking(stickyLang.locked)).catch(() => {});
+  }, 25_000);
+  const clearWatchdog = () => clearTimeout(watchdogTimer);
   const aiMessages = [
     { role: "system" as const, content: systemPrompt },
     ...messages.map((m) => ({
