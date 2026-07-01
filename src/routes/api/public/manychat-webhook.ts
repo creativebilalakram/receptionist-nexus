@@ -2995,15 +2995,13 @@ STRICT TOOL NAME RULE:
 - Exactly ONE action per turn. If two things are needed (e.g. check + book), take the FIRST step this turn and the next step on the next turn.`
   );
 
-  // BLOCK 8B — RUNTIME FACTS (FIX 15B and future dynamic hints)
-  // Injected only when the code layer detects a runtime condition the AI
-  // must react to (e.g. exact-repeat message, stuck-flow recovery).
-  if (runtimeFacts && runtimeFacts.trim()) {
-    blocks.push(`RUNTIME FACTS (dynamic — apply these to THIS turn only):\n${runtimeFacts.trim()}`);
-  }
+  // Runtime facts (time anchor + per-turn hints) are appended as a SEPARATE
+  // system message by the caller via buildDynamicSystemPrompt(), so the
+  // stable prefix above stays byte-identical across turns for prompt caching.
 
   return blocks.join("\n\n");
 }
+
 
 // ---------- Booking helpers ----------
 
