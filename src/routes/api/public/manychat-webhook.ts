@@ -636,6 +636,17 @@ async function processAndSend(
     aiReply = delistReplyText(aiReply);
   }
 
+  // FIX 10: strip any sentence that promises to send a deliverable we don't
+  // actually have (video / PDF / brochure / deck / screenshot / case study /
+  // recording / walkthrough / sample). Applies to every turn, including the
+  // opener. If the scrub leaves an empty reply, fall back to a safe filler.
+  const preScrub = aiReply;
+  aiReply = scrubImaginaryOffers(aiReply);
+  if (!aiReply.trim()) {
+    aiReply = pickPostAckFiller(data.message_text) || preScrub;
+  }
+
+
   // Decide on message parts: prefer model-provided reply_parts, else auto-split.
   // FIX 1: the premium first-message opener MUST arrive as ONE bubble so the
   // closing question is never dropped by autoSplit or a delivery hiccup.
