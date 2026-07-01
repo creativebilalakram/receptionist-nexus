@@ -186,7 +186,11 @@ function detectLangHint(text: string): "en" | "ur" | "ar" {
 // Roman Urdu / Hindi from plain English so the AI stops randomly switching
 // to formal English mid-thread when the user is clearly typing Roman Urdu.
 type LangCode = "en" | "ur-roman" | "ur-script" | "hi-script" | "ar";
-const ROMAN_URDU_TOKENS = /\b(hai|hain|hoon|hun|ho|nahi|nahin|nai|kya|kyun|kyu|kaise|kaisay|kasa|kese|ap|aap|apka|apki|mujhe|muja|mera|meri|meray|karo|kro|krna|karna|kar|krta|krti|krte|karta|karti|karte|dena|dedo|dedena|bhej|bhejo|batao|bata|bta|batadein|acha|accha|theek|thk|thik|sahi|sahi|zaroor|zarur|abhi|filhal|matlab|price|paisa|paise|paisay|banda|insaan|mein|mai|humare|hamare|hamara|humara|shukriya|shukria|meherbani|dekhta|dekhti|dekh|chahiye|chahye|chaiye|chahye|hoga|hogi|hongay|hogaya|hogayi|banao|bnao|karega|karegi|kro na|krdo|krdena|salon|dukan|clinic)\b/;
+const ROMAN_URDU_TOKENS = /\b(hai|hain|hoon|hun|ho|nahi|nahin|nai|kya|kyun|kyu|kaise|kaisay|kasa|kese|ap|aap|apka|apki|apko|mujhe|muja|mera|meri|meray|karo|kro|krna|karna|kar|krta|krti|krte|karta|karti|karte|dena|dedo|dedena|bhej|bhejo|batao|bata|bta|batadein|acha|accha|theek|thk|thik|sahi|zaroor|zarur|abhi|filhal|matlab|paisa|paise|paisay|banda|insaan|mein|mai|humare|hamare|hamara|humara|shukriya|shukria|meherbani|dekhta|dekhti|dekh|chahiye|chahye|chaiye|hoga|hogi|hongay|hogaya|hogayi|banao|bnao|karega|karegi|krdo|krdena|salam|assalam|assalamualaikum|assalamoalaikum|aoa|walaikum|walikum|walekum|wasalam|bhai|bhaijaan|yaar|yar|ji|jee|boss|hosakta|hosakti|sakta|sakti|sakte|hum|humein|hamein|chal|chalega|chalta|chalti|dijiye|dijye|dijiyega|kijiye|kijye|sunain|sunye|sunlein|sunlen|puchna|puchein|pooch|pochna|batadein|bataye|batayein|please|plz)\b/i;
+function countRomanUrduTokens(roman: string): number {
+  const m = roman.match(new RegExp(ROMAN_URDU_TOKENS.source, "gi"));
+  return m ? m.length : 0;
+}
 function detectLangFine(text: string): LangCode {
   if (!text) return "en";
   // Devanagari (Hindi) script
@@ -204,6 +208,82 @@ function detectLangFine(text: string): LangCode {
   const roman = normalizeForMatch(text);
   if (ROMAN_URDU_TOKENS.test(roman)) return "ur-roman";
   return "en";
+}
+// A generic short English greeting ("hi", "hello", "hey") is NOT a real
+// commitment to English — Pakistani/Indian leads open with "hi" then switch
+// straight into Roman Urdu. Treat these as ambiguous so a Roman-Urdu turn
+// afterwards can flip the lock immediately.
+function isAmbiguousGreeting(text: string): boolean {
+  const t = normalizeForMatch(text);
+  if (!t) return true;
+  if (t.split(" ").filter(Boolean).length > 3) return false;
+  return /^(hi|hii+|hello+|hey+|yo|sup|start|hallo|helo)\b/.test(t);
+}
+function looksClearlyRomanUrdu(text: string): boolean {
+  const roman = normalizeForMatch(text);
+  if (!roman) return false;
+  const count = countRomanUrduTokens(roman);
+  if (count >= 2) return true;
+  // A single strong Roman-Urdu token in a short message is still a clear signal
+  const words = roman.split(" ").filter(Boolean).length;
+  return count >= 1 && words <= 8;
+}
+function langLabel(l: LangCode): string {
+  switch (l) {
+    case "ur-roman": return "Roman Urdu / Roman Hindi (Latin script, e.g. \"kya price hai\")";
+    case "ur-script": return "Urdu (اردو script)";
+    case "hi-script": return "Hindi (देवनागरी script)";
+    case "ar": return "Arabic (العربية)";
+    default: return "English";
+  }
+}
+// Decide the LOCKED language for this conversation. Rules:
+//   • First user message → lock to whatever they typed, UNLESS it's a
+//     generic greeting ("hi", "hello") — those don't count as an English
+//     commitment, so we stay unlocked until the next real message.
+//   • Once locked, switch immediately on:
+//       (a) any hard script switch (Urdu / Hindi / Arabic script), OR
+//       (b) a clearly Roman-Urdu message (≥2 Roman-Urdu tokens, or ≥1 in
+//           a short message) — no need to wait for a second confirming turn.
+//     A single English loanword inside a Roman-Urdu thread does NOT flip
+//     the lock back to English.
+function resolveStickyLanguage(
+  previousLocked: LangCode | null,
+  currentText: string,
+  priorUserMessages: string[],
+): { locked: LangCode; detected: LangCode; switched: boolean } {
+  const detected = detectLangFine(currentText);
+  // No prior lock: only lock on a substantive signal. Generic greetings stay unlocked.
+  if (!previousLocked) {
+    if (detected === "en" && isAmbiguousGreeting(currentText)) {
+      return { locked: "en", detected, switched: false };
+    }
+    return { locked: detected, detected, switched: false };
+  }
+  if (detected === previousLocked) return { locked: previousLocked, detected, switched: false };
+  const isScriptSwitch =
+    (["ur-script", "hi-script", "ar"] as LangCode[]).includes(detected) ||
+    (["ur-script", "hi-script", "ar"] as LangCode[]).includes(previousLocked);
+  if (isScriptSwitch) return { locked: detected, detected, switched: true };
+  // Latin-script en ↔ ur-roman flip:
+  //   • en → ur-roman: allow immediately if the message is clearly Roman Urdu
+  //   • ur-roman → en: require the PRIOR user message to also be plain English
+  //     with zero Roman-Urdu tokens (loanwords like "price" alone shouldn't flip).
+  if (previousLocked === "en" && detected === "ur-roman") {
+    if (looksClearlyRomanUrdu(currentText)) {
+      return { locked: "ur-roman", detected, switched: true };
+    }
+    return { locked: previousLocked, detected, switched: false };
+  }
+  if (previousLocked === "ur-roman" && detected === "en") {
+    const lastPrior = [...priorUserMessages].reverse().find((t) => (t ?? "").trim().length > 0) ?? "";
+    const priorRomanCount = countRomanUrduTokens(normalizeForMatch(lastPrior));
+    if (priorRomanCount === 0 && !isAmbiguousGreeting(currentText)) {
+      return { locked: "en", detected, switched: true };
+    }
+    return { locked: previousLocked, detected, switched: false };
+  }
+  return { locked: previousLocked, detected, switched: false };
 }
 function langLabel(l: LangCode): string {
   switch (l) {
