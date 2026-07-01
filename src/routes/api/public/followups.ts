@@ -56,11 +56,30 @@ export const Route = createFileRoute("/api/public/followups")({
         const skipped: Array<{ id: string; reason: string }> = [];
 
         for (const c of candidates ?? []) {
-          // Skip if no real interest signal
-          const interested =
-            (c.lead_score ?? 0) > 0 ||
-            ["qualify", "position", "invite", "close"].includes(String(c.current_stage ?? ""));
-          if (!interested) { skipped.push({ id: c.id, reason: "not_interested" }); continue; }
+          const messages: Msg[] = Array.isArray(c.messages) ? (c.messages as unknown as Msg[]) : [];
+          if (messages.length === 0) { skipped.push({ id: c.id, reason: "empty" }); continue; }
+
+          // --- Fix 9: substance gate ---
+          // A followup is only allowed if we have REAL context to reference.
+          // "Hi" alone is not context — sending a personalized-sounding followup on
+          // that would fabricate a discussion that never happened.
+          const userMsgs = messages.filter((m) => m.role === "user");
+          const substantiveUserMsgs = userMsgs.filter((m) => {
+            const t = (m.content ?? "").trim();
+            if (t.length < 15) return false; // very short = greeting/emoji/thanks
+            // strip common greetings
+            const stripped = t.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim();
+            if (/^(hi|hey|hello|salam|assalam[uo]?\s?alaikum|aoa|yo|sup|thanks|thank\s?you|shukriya|ok|okay|k)\b/.test(stripped) && stripped.split(/\s+/).length <= 4) return false;
+            return true;
+          });
+          const hasSubstance = substantiveUserMsgs.length > 0;
+          const strongStage = ["qualify", "position", "invite", "close"].includes(String(c.current_stage ?? ""));
+          const scored = (c.lead_score ?? 0) > 0;
+
+          // Require at least ONE substantive user message. Score/stage alone is not
+          // enough — those can get bumped by the bot's own logic without real signal.
+          if (!hasSubstance) { skipped.push({ id: c.id, reason: "no_substance" }); continue; }
+          if (!strongStage && !scored) { skipped.push({ id: c.id, reason: "not_interested" }); continue; }
 
           // Skip if already has a scheduled/confirmed appointment
           const { data: appts } = await supabaseAdmin
@@ -75,8 +94,6 @@ export const Route = createFileRoute("/api/public/followups")({
             continue;
           }
 
-          const messages: Msg[] = Array.isArray(c.messages) ? (c.messages as unknown as Msg[]) : [];
-          if (messages.length === 0) { skipped.push({ id: c.id, reason: "empty" }); continue; }
 
           // Load client context
           const { data: client } = await supabaseAdmin
