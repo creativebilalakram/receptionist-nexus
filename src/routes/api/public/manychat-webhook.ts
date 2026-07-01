@@ -1671,6 +1671,7 @@ function composeRescheduleSuccessReply(oldLabel: string, newLabel: string, lastU
   });
 }
 
+function resolveSlotFromConversation(
   ctx: { timezone: string },
   messages: Msg[],
   lastUserText: string,
