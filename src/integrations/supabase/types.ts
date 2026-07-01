@@ -320,6 +320,7 @@ export type Database = {
           id: string
           language: string | null
           last_message_at: string | null
+          last_offered_slot_iso: string | null
           last_reasoning: string | null
           lead_score: number
           manual_takeover: boolean
@@ -342,6 +343,7 @@ export type Database = {
           id?: string
           language?: string | null
           last_message_at?: string | null
+          last_offered_slot_iso?: string | null
           last_reasoning?: string | null
           lead_score?: number
           manual_takeover?: boolean
@@ -364,6 +366,7 @@ export type Database = {
           id?: string
           language?: string | null
           last_message_at?: string | null
+          last_offered_slot_iso?: string | null
           last_reasoning?: string | null
           lead_score?: number
           manual_takeover?: boolean

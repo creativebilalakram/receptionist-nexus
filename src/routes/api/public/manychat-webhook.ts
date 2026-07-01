@@ -658,6 +658,14 @@ async function processAndSend(
     action = { type: "none" };
   }
   let toolFinalReply = false;
+  // Remember the exact/first slot last offered to the user via check_availability
+  // so that if the AI later emits book_slot with a hallucinated ISO, we can fall
+  // back to what we actually just told them was available.
+  let offeredSlotIso: string | null =
+    (existing as unknown as { last_offered_slot_iso?: string | null } | null)
+      ?.last_offered_slot_iso
+      ? new Date((existing as unknown as { last_offered_slot_iso: string }).last_offered_slot_iso).toISOString()
+      : null;
   if (!shouldEscalate && action && action.type !== "none") {
     const ackText = pickAckText(parsedAI?.reply, data.message_text, action.type);
     if (ackText) {
@@ -725,6 +733,10 @@ async function processAndSend(
           alternatives,
           window_empty: pool.length === 0,
         };
+
+        // Remember what we just offered so a follow-up book_slot with a bad
+        // ISO can be recovered to the exact slot the user actually saw.
+        offeredSlotIso = exactSlot?.start ?? alternatives[0]?.start ?? offeredSlotIso;
 
         // Production reliability: do not wait on a second AI call for slot copy.
         // The backend already knows the truth; compose the final useful reply deterministically.
@@ -811,6 +823,30 @@ async function processAndSend(
                 status_code: 200,
               });
             }
+          }
+        }
+      }
+
+      // (2b) last-offered fallback — if we still don't have a validated ISO,
+      // try the slot we most recently told this user was available. This is
+      // the fix for the "confirmed 10am, but book_slot got a random ISO for
+      // today" failure: honor what the user actually said yes to.
+      if (!validatedIso && !("error" in ctx) && offeredSlotIso) {
+        const offeredMs = new Date(offeredSlotIso).getTime();
+        if (!Number.isNaN(offeredMs) && offeredMs > nowMs - 5 * 60_000) {
+          const hit = tryMatchAround(offeredMs);
+          if (hit) {
+            validatedIso = hit;
+            await supabaseAdmin.from("webhook_logs").insert({
+              client_id: client.id,
+              direction: "outbound",
+              payload: {
+                kind: "book_slot_recovered_from_last_offered",
+                original_iso: action.slot_iso_utc,
+                recovered_iso: hit,
+              } as unknown as Json,
+              status_code: 200,
+            });
           }
         }
       }
@@ -1005,6 +1041,7 @@ async function processAndSend(
     language: stickyLang.locked,
     last_reasoning: parsedAI?.reasoning ?? null,
     last_message_at: new Date().toISOString(),
+    last_offered_slot_iso: offeredSlotIso,
     phone: data.phone ?? existing?.phone ?? null,
     first_name: data.first_name ?? existing?.first_name ?? null,
     ...(recoveringAutoRepeatEscalation && !shouldEscalate
