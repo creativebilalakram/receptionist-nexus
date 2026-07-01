@@ -1160,6 +1160,10 @@ async function processAndSend(
   // closing question is never dropped by autoSplit or a delivery hiccup.
   let parts: string[] = [];
   if (isFirstEverMessage) {
+    // Defensive: if the model slipped bullets into the opener anyway, strip
+    // the bullet markers and drop obvious capability-list lines so the opener
+    // stays a clean 1-3 line human message instead of a brochure.
+    aiReply = sanitizeOpener(aiReply);
     parts = [aiReply];
   } else {
     const modelParts = !toolFinalReply && Array.isArray(parsedAI?.reply_parts)
