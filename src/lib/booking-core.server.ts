@@ -250,7 +250,16 @@ export async function bookAppointment(
     status: "scheduled",
   }).select("id").single();
 
-  if (error || !data) return { ok: false, error: error?.message || "insert_failed" };
+  if (error || !data) {
+    // Postgres unique_violation (23505) from the partial unique index
+    // appointments_no_double_book — another booking won the race for this slot.
+    const code = (error as { code?: string } | null)?.code;
+    const msg = (error?.message || "").toLowerCase();
+    if (code === "23505" || msg.includes("appointments_no_double_book") || msg.includes("duplicate key")) {
+      return { ok: false, error: "slot_unavailable" };
+    }
+    return { ok: false, error: error?.message || "insert_failed" };
+  }
   return { ok: true, appointmentId: data.id, start: start.toISOString(), label: formatSlotLabel(start, ctx.timezone) };
 }
 
