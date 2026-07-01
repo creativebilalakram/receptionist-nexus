@@ -652,7 +652,7 @@ async function processAndSend(
   // Code-level override: if user explicitly says "undo / wapas / wrong one /
   // restore" right after a cancellation, force restore_booking even if the
   // model chose otherwise.
-  if (looksLikeExplicitRestoreIntent(data.message_text, messages) && action.type !== "restore_booking") {
+  if (action && action.type !== "restore_booking" && looksLikeExplicitRestoreIntent(data.message_text, messages)) {
     action = { type: "restore_booking" };
   }
   // SAFETY: if the conversation is already booked, ignore accidental booking
