@@ -2542,8 +2542,13 @@ function sanitizeOpener(text: string): string {
 
 
 
-function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean, lockedLang: LangCode = "en", runtimeFacts: string | null = null): string {
-  const blocks: string[] = [];
+/**
+ * Build the DYNAMIC portion of the system prompt (time anchor + per-turn
+ * runtime hints). Kept separate from the stable prompt so that the large
+ * static prefix stays byte-identical across turns and can be prompt-cached
+ * by the model provider (~50-70% cost reduction on repeated system content).
+ */
+function buildDynamicSystemPrompt(client: ClientRow, runtimeFacts: string | null = null): string {
   const tz = client.timezone || "UTC";
   const now = new Date();
   const todayLocal = new Intl.DateTimeFormat("en-US", {
@@ -2553,14 +2558,22 @@ function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstE
   const todayYmd = new Intl.DateTimeFormat("en-CA", {
     timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
   }).format(now);
-
-  // BLOCK 0 — TIME ANCHOR (critical — prevents date drift to training cutoff)
-  blocks.push(
+  const parts: string[] = [
     `CURRENT TIME ANCHOR (use this — do NOT guess from training data)
 Right now it is: ${todayLocal} (${tz}).
 Today's date is ${todayYmd}.
-When the user says "tomorrow", "kal", "next week", etc., resolve relative to THIS date — never to any other year. ALL slot_iso_utc values you emit MUST be on or after today.`
-  );
+When the user says "tomorrow", "kal", "next week", etc., resolve relative to THIS date — never to any other year. ALL slot_iso_utc values you emit MUST be on or after today.`,
+  ];
+  if (runtimeFacts && runtimeFacts.trim()) {
+    parts.push(`RUNTIME FACTS (dynamic — apply these to THIS turn only):\n${runtimeFacts.trim()}`);
+  }
+  return parts.join("\n\n");
+}
+
+function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean, lockedLang: LangCode = "en"): string {
+  const blocks: string[] = [];
+
+
 
   // BLOCK 0B — LOCKED LANGUAGE (FIX 13)
   // The conversation is locked to the language the user opened in. Do NOT
