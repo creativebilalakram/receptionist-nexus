@@ -169,6 +169,68 @@ function detectLangHint(text: string): "en" | "ur" | "ar" {
   }
   return "en";
 }
+
+// FIX 13 — LANGUAGE MIRRORING (sticky per conversation)
+// Fine-grained detector used for the sticky-lang decision. Distinguishes
+// Roman Urdu / Hindi from plain English so the AI stops randomly switching
+// to formal English mid-thread when the user is clearly typing Roman Urdu.
+type LangCode = "en" | "ur-roman" | "ur-script" | "hi-script" | "ar";
+const ROMAN_URDU_TOKENS = /\b(hai|hain|hoon|hun|ho|nahi|nahin|nai|kya|kyun|kyu|kaise|kaisay|kasa|kese|ap|aap|apka|apki|mujhe|muja|mera|meri|meray|karo|kro|krna|karna|kar|krta|krti|krte|karta|karti|karte|dena|dedo|dedena|bhej|bhejo|batao|bata|bta|batadein|acha|accha|theek|thk|thik|sahi|sahi|zaroor|zarur|abhi|filhal|matlab|price|paisa|paise|paisay|banda|insaan|mein|mai|humare|hamare|hamara|humara|shukriya|shukria|meherbani|dekhta|dekhti|dekh|chahiye|chahye|chaiye|chahye|hoga|hogi|hongay|hogaya|hogayi|banao|bnao|karega|karegi|kro na|krdo|krdena|salon|dukan|clinic)\b/;
+function detectLangFine(text: string): LangCode {
+  if (!text) return "en";
+  // Devanagari (Hindi) script
+  if (/[\u0900-\u097F]/.test(text)) return "hi-script";
+  // Arabic script — differentiate Arabic vs Urdu-script.
+  if (/[\u0600-\u06FF]/.test(text)) {
+    // Urdu-specific letters that don't appear in modern standard Arabic
+    if (/[\u0679\u067E\u0686\u0688\u0691\u0698\u06A9\u06AF\u06BA\u06BE\u06C1\u06CC\u06D2]/.test(text)) {
+      return "ur-script";
+    }
+    // Common Arabic function words / definite article
+    if (/(^|\s)(ال|في|من|على|هذا|هذه|أن|إلى|هل|كيف|ماذا|لا|نعم)(\s|$)/.test(text)) return "ar";
+    return "ur-script";
+  }
+  const roman = normalizeForMatch(text);
+  if (ROMAN_URDU_TOKENS.test(roman)) return "ur-roman";
+  return "en";
+}
+function langLabel(l: LangCode): string {
+  switch (l) {
+    case "ur-roman": return "Roman Urdu / Roman Hindi (Latin script, e.g. \"kya price hai\")";
+    case "ur-script": return "Urdu (اردو script)";
+    case "hi-script": return "Hindi (देवनागरी script)";
+    case "ar": return "Arabic (العربية)";
+    default: return "English";
+  }
+}
+// Decide the LOCKED language for this conversation. Rules:
+//   • First user message → lock to whatever they typed.
+//   • Once locked, only switch if EITHER
+//       (a) the current message is a hard script switch (Urdu / Hindi /
+//           Arabic script when we were locked to English or Roman Urdu, or
+//           vice versa), OR
+//       (b) both of the user's last two messages (including the current)
+//           agree on the new language — a single English word inside a
+//           Roman Urdu thread must NOT flip the lock.
+function resolveStickyLanguage(
+  previousLocked: LangCode | null,
+  currentText: string,
+  priorUserMessages: string[],
+): { locked: LangCode; detected: LangCode; switched: boolean } {
+  const detected = detectLangFine(currentText);
+  if (!previousLocked) return { locked: detected, detected, switched: false };
+  if (detected === previousLocked) return { locked: previousLocked, detected, switched: false };
+  const isScriptSwitch =
+    (["ur-script", "hi-script", "ar"] as LangCode[]).includes(detected) ||
+    (["ur-script", "hi-script", "ar"] as LangCode[]).includes(previousLocked);
+  if (isScriptSwitch) return { locked: detected, detected, switched: true };
+  // Latin-script ambiguity (en ↔ ur-roman). Require the prior user message
+  // to also be in the new language before flipping the lock.
+  const lastPrior = [...priorUserMessages].reverse().find((t) => (t ?? "").trim().length > 0) ?? "";
+  const priorDetected = detectLangFine(lastPrior);
+  if (priorDetected === detected) return { locked: detected, detected, switched: true };
+  return { locked: previousLocked, detected, switched: false };
+}
 function handoffMessage(firstName: string | null, lang: "en" | "ur" | "ar"): string {
   const name = firstName ? `, ${firstName}` : "";
   if (lang === "ur") {
