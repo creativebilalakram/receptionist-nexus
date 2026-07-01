@@ -11,14 +11,13 @@ export type Slot = { start: string; end: string; label: string };
 export type MeetingType = Database["public"]["Tables"]["meeting_types"]["Row"];
 export type BookingSettings = Database["public"]["Tables"]["booking_settings"]["Row"];
 
-// Slot stepping is derived from meeting footprint, never hardcoded.
-// step = meeting.duration + meeting.buffer_before + meeting.buffer_after + booking_settings.auto_buffer_after
+// Slot start cadence must NOT equal meeting footprint. The footprint is only
+// for conflict checks. If a 30m demo has a 15m buffer, stepping by 45m hides
+// normal times like 11:00 and falsely says they are busy.
 function computeStepMinutes(mt: MeetingType, settings: BookingSettings): number {
   const dur = mt.duration_minutes ?? 30;
-  const bb = mt.buffer_before_minutes ?? 0;
-  const ba = mt.buffer_after_minutes ?? 0;
-  const auto = settings.auto_buffer_after_minutes ?? 15;
-  return Math.max(5, dur + bb + ba + auto);
+  void settings;
+  return Math.max(5, Math.min(15, dur));
 }
 
 function ymd(d: Date): string {
