@@ -561,11 +561,14 @@ async function processAndSend(
   // and offers a different angle (or handoff on the 3rd repeat).
   const repeatInfo = detectRepeatUserMessage(data.message_text, priorHistory);
 
-  const systemPrompt = buildSystemPrompt(
+  const systemPromptStable = buildSystemPrompt(
     client,
     data.first_name ?? null,
     isFirstEverMessage,
     stickyLang.locked,
+  );
+  const systemPromptDynamic = buildDynamicSystemPrompt(
+    client,
     repeatInfo.runtimeFact,
   );
 
@@ -578,8 +581,14 @@ async function processAndSend(
     void sendWhatsAppText(data.subscriber_id, localizedStillWorking(stickyLang.locked)).catch(() => {});
   }, 25_000);
   const clearWatchdog = () => clearTimeout(watchdogTimer);
+  // Message order (prompt-caching friendly):
+  //   1) Stable system prompt (static blocks + client-specific stable context)
+  //   2) Dynamic system prompt (time anchor + per-turn runtime facts)
+  //   3) Conversation history
+  //   4) Latest user message (already the tail of `messages`)
   const aiMessages = [
-    { role: "system" as const, content: systemPrompt },
+    { role: "system" as const, content: systemPromptStable },
+    { role: "system" as const, content: systemPromptDynamic },
     ...messages.map((m) => ({
       role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
       content: m.content,
@@ -587,14 +596,14 @@ async function processAndSend(
   ];
 
   const aiKey = process.env.OPENAI_API_KEY;
-  const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const aiModel = client.ai_model || process.env.OPENAI_MODEL || "gpt-4.1-mini";
   let aiReply = FALLBACK;
   let parsedAI: AIResponse | null = null;
   let aiResponseLog: unknown = null;
   let aiStatusCode = 0;
 
   if (!aiKey) {
-    aiResponseLog = { error: "missing_OPENAI_API_KEY" };
+    aiResponseLog = { error: "missing_OPENAI_API_KEY", model: aiModel };
   } else {
     try {
       const { retryFetch } = await import("@/lib/retry");
@@ -610,6 +619,7 @@ async function processAndSend(
           response_format: { type: "json_object" },
         }),
       }, { attempts: 3, baseMs: 500, timeoutMs: 18_000, label: "openai-main" });
+
       aiStatusCode = resp.status;
       const json = await resp.json().catch(() => null);
       aiResponseLog = json;
