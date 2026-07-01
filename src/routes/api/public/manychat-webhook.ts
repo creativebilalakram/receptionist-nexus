@@ -134,7 +134,18 @@ export const Route = createFileRoute("/api/public/manychat-webhook")({
         const subscriber_id = rawData.subscriber_id ?? (rawData.id != null ? String(rawData.id) : "");
         const phone = rawData.phone ?? rawData.whatsapp_phone ?? null;
         const first_name = rawData.first_name ?? null;
-        const message_text = (rawData.message_text ?? rawData.last_input_text ?? "").trim();
+        const rawMessageText = (rawData.message_text ?? rawData.last_input_text ?? "").trim();
+        // FIX 3 — ManyChat greeting / placeholder scrub.
+        // ManyChat frequently ships the FIRST inbound as either an unresolved
+        // template ("{{first_name}}", "First Name", "[[phone]]") or its own
+        // canned opener the subscriber tapped ("Hi, I'd like to learn more...").
+        // We do three things:
+        //   1) strip unresolved {{...}} / [[...]] / <<...>> tokens
+        //   2) if the remaining text is empty / a bare placeholder word, treat
+        //      the message as an intent-to-start (so the premium opener fires
+        //      cleanly instead of the AI echoing the placeholder back)
+        //   3) hand the cleaned text downstream so the AI never quotes a token
+        const message_text = sanitizeInboundText(rawMessageText);
 
         if (!client_id || !webhook_secret || !subscriber_id || !message_text) {
           await supabaseAdmin.from("webhook_logs").insert({
