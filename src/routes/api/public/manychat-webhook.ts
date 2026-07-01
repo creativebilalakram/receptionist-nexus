@@ -962,26 +962,40 @@ async function processAndSend(
         status_code: 200,
       });
     } else if (action.type === "cancel_booking") {
-      const target = await pickTargetAppointment(supabaseAdmin, client.id, convoId ?? null, action.appointment_id ?? null);
-      if (!target) {
+      const ctxCli = await supabaseAdmin.from("clients").select("timezone").eq("id", client.id).maybeSingle();
+      const tzCancel = ctxCli.data?.timezone || "UTC";
+      const upcoming = await fetchUpcomingForConversation(supabaseAdmin, client.id, convoId ?? null);
+      const resolved = await resolveTargetFromExplicitOrText(
+        supabaseAdmin, client.id, convoId ?? null,
+        action.appointment_id ?? null, upcoming, messages, data.message_text, tzCancel,
+      );
+      if (resolved.ambiguous) {
+        aiReply = composeAmbiguousBookingReply(resolved.candidates, data.message_text, "cancel");
+        toolFinalReply = true;
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id, direction: "outbound",
+          payload: { kind: "cancel_booking_ambiguous", candidates: resolved.candidates.map((c) => ({ id: c.id, label: c.label })) } as unknown as Json,
+          status_code: 200,
+        });
+      } else if (!resolved.target) {
         aiReply = composeNoBookingFoundReply(data.message_text);
         toolFinalReply = true;
         await supabaseAdmin.from("webhook_logs").insert({
-          client_id: client.id,
-          direction: "outbound",
+          client_id: client.id, direction: "outbound",
           payload: { kind: "cancel_booking_none_found" } as unknown as Json,
           status_code: 404,
         });
       } else {
+        const target = resolved.target;
         const { cancelAppointment } = await import("@/lib/booking-core.server");
         const res = await cancelAppointment(supabaseAdmin, target.id, action.reason ?? "cancelled by user via WhatsApp");
         if (res.ok) {
-          if (status === "booked") status = "qualified";
+          const remaining = upcoming.filter((u) => u.id !== target.id).length;
+          if (status === "booked" && remaining === 0) status = "qualified";
           aiReply = composeCancelSuccessReply(target.label, data.message_text);
           toolFinalReply = true;
           await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id,
-            direction: "outbound",
+            client_id: client.id, direction: "outbound",
             payload: { kind: "cancel_booking_ok", appointment_id: target.id } as unknown as Json,
             status_code: 200,
           });
@@ -989,23 +1003,54 @@ async function processAndSend(
           aiReply = pickAvailabilityFailureText(data.message_text);
           toolFinalReply = true;
           await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id,
-            direction: "outbound",
+            client_id: client.id, direction: "outbound",
             payload: { kind: "cancel_booking_failed", error: res.error, appointment_id: target.id } as unknown as Json,
             status_code: 422,
           });
         }
       }
+    } else if (action.type === "restore_booking") {
+      const ctxCli = await supabaseAdmin.from("clients").select("timezone").eq("id", client.id).maybeSingle();
+      const tzR = ctxCli.data?.timezone || "UTC";
+      const restored = await restoreLastCancelledForConversation(supabaseAdmin, client.id, convoId ?? null, tzR);
+      if (restored.ok) {
+        status = "booked";
+        aiReply = composeRestoreSuccessReply(restored.label, data.message_text);
+        toolFinalReply = true;
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id, direction: "outbound",
+          payload: { kind: "restore_booking_ok", appointment_id: restored.appointmentId } as unknown as Json,
+          status_code: 200,
+        });
+      } else {
+        aiReply = composeRestoreFailureReply(data.message_text, restored.reason);
+        toolFinalReply = true;
+        await supabaseAdmin.from("webhook_logs").insert({
+          client_id: client.id, direction: "outbound",
+          payload: { kind: "restore_booking_failed", reason: restored.reason } as unknown as Json,
+          status_code: 422,
+        });
+      }
     } else if (action.type === "reschedule_booking") {
-      const target = await pickTargetAppointment(supabaseAdmin, client.id, convoId ?? null, action.appointment_id ?? null);
+      const ctxCli = await supabaseAdmin.from("clients").select("timezone").eq("id", client.id).maybeSingle();
+      const tzResc = ctxCli.data?.timezone || "UTC";
+      const upcoming = await fetchUpcomingForConversation(supabaseAdmin, client.id, convoId ?? null);
+      const resolved = await resolveTargetFromExplicitOrText(
+        supabaseAdmin, client.id, convoId ?? null,
+        action.appointment_id ?? null, upcoming, messages, data.message_text, tzResc,
+      );
       const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
-      if (!target) {
+      if (resolved.ambiguous) {
+        aiReply = composeAmbiguousBookingReply(resolved.candidates, data.message_text, "reschedule");
+        toolFinalReply = true;
+      } else if (!resolved.target) {
         aiReply = composeNoBookingFoundReply(data.message_text);
         toolFinalReply = true;
       } else if ("error" in ctx) {
         aiReply = pickAvailabilityFailureText(data.message_text);
         toolFinalReply = true;
       } else {
+        const target = resolved.target;
         // Validate the new ISO is a real slot; fall back to last_offered if needed.
         const proposed = new Date(action.new_slot_iso_utc);
         const proposedMs = proposed.getTime();
@@ -1029,8 +1074,7 @@ async function processAndSend(
           aiReply = pickBookingFailureText(data.message_text);
           toolFinalReply = true;
           await supabaseAdmin.from("webhook_logs").insert({
-            client_id: client.id,
-            direction: "outbound",
+            client_id: client.id, direction: "outbound",
             payload: { kind: "reschedule_slot_unavailable", proposed_iso: action.new_slot_iso_utc } as unknown as Json,
             status_code: 422,
           });
@@ -1043,8 +1087,7 @@ async function processAndSend(
             aiReply = composeRescheduleSuccessReply(target.label, newLabel, data.message_text);
             toolFinalReply = true;
             await supabaseAdmin.from("webhook_logs").insert({
-              client_id: client.id,
-              direction: "outbound",
+              client_id: client.id, direction: "outbound",
               payload: { kind: "reschedule_ok", appointment_id: target.id, new_iso: validatedIso } as unknown as Json,
               status_code: 200,
             });
@@ -1052,14 +1095,14 @@ async function processAndSend(
             aiReply = pickBookingFailureText(data.message_text);
             toolFinalReply = true;
             await supabaseAdmin.from("webhook_logs").insert({
-              client_id: client.id,
-              direction: "outbound",
+              client_id: client.id, direction: "outbound",
               payload: { kind: "reschedule_failed", error: res.error } as unknown as Json,
               status_code: 422,
             });
           }
         }
       }
+    }
     }
   }
   // Mark that an ack was already pushed so the final send skips re-sending it.
