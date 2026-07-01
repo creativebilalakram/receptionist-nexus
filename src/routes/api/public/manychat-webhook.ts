@@ -1491,13 +1491,21 @@ function looksLikeExplicitBookingTurn(text: string, messages: Msg[]): boolean {
   if (looksLikeAvailabilityAsk(t)) return true;
   if (parseSpecificTimeLocal(t)) return true;
 
-  const hasBookingVerb = /\b(book|booking|appointment|demo|schedule|schedul|reschedule|cancel|lock|confirm|reserve|pakka|fix|set)\b/.test(t)
-    || /\b(book\s*kar|lock\s*kar|confirm\s*kar|kar\s*do|kr\s*do|kar\s*dun|kr\s*dun)\b/.test(t);
-  if (hasBookingVerb) return true;
+  // HARD action verbs — unambiguous intent to lock/change a slot.
+  const hardActionVerb = /\b(book|booking|reschedule|cancel|lock|confirm|reserve|pakka)\b/.test(t)
+    || /\b(book\s*kar|lock\s*kar|confirm\s*kar|kar\s*do|kr\s*do|kar\s*dun|kr\s*dun|kardo|krdo|kardun|krdun)\b/.test(t);
+  if (hardActionVerb) return true;
 
-  const dateish = /\b(today|tomorrow|tmrw|kal|aaj|sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?)\b/.test(t);
+  const dateish = /\b(today|tomorrow|tmrw|kal|aaj|parso|sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th))\b/.test(t);
   const timeish = /\b(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*(?:am|pm)\b|\b(?:[01]?\d|2[0-3]):[0-5]\d\b/.test(t);
   if (dateish && timeish) return true;
+
+  // SOFT nouns ("demo", "appointment", "meeting", "schedule") do NOT trigger
+  // a booking flow on their own — "demo dy sakte hen?" is a capability question,
+  // not a slot request. They only count when the user pairs them with a date,
+  // time, or explicit availability/scheduling ask.
+  const softNoun = /\b(demo|appointment|meeting|schedule|schedul|slot|slots)\b/.test(t);
+  if (softNoun && (dateish || timeish)) return true;
 
   const affirmative = /^(yes|yep|yeah|ok|okay|sure|confirm|confirmed|lock|book|done|haan|han|ha|jee|ji|theek|thk|sahi|kar do|kr do|kardo|krdo)\b/.test(t.trim());
   if (affirmative) {
