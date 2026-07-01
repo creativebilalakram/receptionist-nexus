@@ -285,43 +285,6 @@ function resolveStickyLanguage(
   }
   return { locked: previousLocked, detected, switched: false };
 }
-function langLabel(l: LangCode): string {
-  switch (l) {
-    case "ur-roman": return "Roman Urdu / Roman Hindi (Latin script, e.g. \"kya price hai\")";
-    case "ur-script": return "Urdu (اردو script)";
-    case "hi-script": return "Hindi (देवनागरी script)";
-    case "ar": return "Arabic (العربية)";
-    default: return "English";
-  }
-}
-// Decide the LOCKED language for this conversation. Rules:
-//   • First user message → lock to whatever they typed.
-//   • Once locked, only switch if EITHER
-//       (a) the current message is a hard script switch (Urdu / Hindi /
-//           Arabic script when we were locked to English or Roman Urdu, or
-//           vice versa), OR
-//       (b) both of the user's last two messages (including the current)
-//           agree on the new language — a single English word inside a
-//           Roman Urdu thread must NOT flip the lock.
-function resolveStickyLanguage(
-  previousLocked: LangCode | null,
-  currentText: string,
-  priorUserMessages: string[],
-): { locked: LangCode; detected: LangCode; switched: boolean } {
-  const detected = detectLangFine(currentText);
-  if (!previousLocked) return { locked: detected, detected, switched: false };
-  if (detected === previousLocked) return { locked: previousLocked, detected, switched: false };
-  const isScriptSwitch =
-    (["ur-script", "hi-script", "ar"] as LangCode[]).includes(detected) ||
-    (["ur-script", "hi-script", "ar"] as LangCode[]).includes(previousLocked);
-  if (isScriptSwitch) return { locked: detected, detected, switched: true };
-  // Latin-script ambiguity (en ↔ ur-roman). Require the prior user message
-  // to also be in the new language before flipping the lock.
-  const lastPrior = [...priorUserMessages].reverse().find((t) => (t ?? "").trim().length > 0) ?? "";
-  const priorDetected = detectLangFine(lastPrior);
-  if (priorDetected === detected) return { locked: detected, detected, switched: true };
-  return { locked: previousLocked, detected, switched: false };
-}
 function handoffMessage(firstName: string | null, lang: "en" | "ur" | "ar"): string {
   const name = firstName ? `, ${firstName}` : "";
   if (lang === "ur") {
