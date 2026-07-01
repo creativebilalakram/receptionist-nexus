@@ -24,6 +24,7 @@ import { Route as AuthenticatedConversationsIdRouteImport } from './routes/_auth
 import { Route as AuthenticatedClientsNewRouteImport } from './routes/_authenticated/clients.new'
 import { Route as AuthenticatedClientsIdRouteImport } from './routes/_authenticated/clients.$id'
 import { Route as ApiPublicHooksWatchdogRouteImport } from './routes/api/public/hooks/watchdog'
+import { Route as AuthenticatedClientsIdBookingDebugRouteImport } from './routes/_authenticated/clients.$id.booking-debug'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -104,6 +105,12 @@ const ApiPublicHooksWatchdogRoute = ApiPublicHooksWatchdogRouteImport.update({
   path: '/api/public/hooks/watchdog',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedClientsIdBookingDebugRoute =
+  AuthenticatedClientsIdBookingDebugRouteImport.update({
+    id: '/booking-debug',
+    path: '/booking-debug',
+    getParentRoute: () => AuthenticatedClientsIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -111,7 +118,7 @@ export interface FileRoutesByFullPath {
   '/appointments': typeof AuthenticatedAppointmentsRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/failures': typeof AuthenticatedFailuresRoute
-  '/clients/$id': typeof AuthenticatedClientsIdRoute
+  '/clients/$id': typeof AuthenticatedClientsIdRouteWithChildren
   '/clients/new': typeof AuthenticatedClientsNewRoute
   '/conversations/$id': typeof AuthenticatedConversationsIdRoute
   '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
@@ -119,6 +126,7 @@ export interface FileRoutesByFullPath {
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/clients/': typeof AuthenticatedClientsIndexRoute
+  '/clients/$id/booking-debug': typeof AuthenticatedClientsIdBookingDebugRoute
   '/api/public/hooks/watchdog': typeof ApiPublicHooksWatchdogRoute
 }
 export interface FileRoutesByTo {
@@ -127,7 +135,7 @@ export interface FileRoutesByTo {
   '/appointments': typeof AuthenticatedAppointmentsRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/failures': typeof AuthenticatedFailuresRoute
-  '/clients/$id': typeof AuthenticatedClientsIdRoute
+  '/clients/$id': typeof AuthenticatedClientsIdRouteWithChildren
   '/clients/new': typeof AuthenticatedClientsNewRoute
   '/conversations/$id': typeof AuthenticatedConversationsIdRoute
   '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
@@ -135,6 +143,7 @@ export interface FileRoutesByTo {
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/clients': typeof AuthenticatedClientsIndexRoute
+  '/clients/$id/booking-debug': typeof AuthenticatedClientsIdBookingDebugRoute
   '/api/public/hooks/watchdog': typeof ApiPublicHooksWatchdogRoute
 }
 export interface FileRoutesById {
@@ -145,7 +154,7 @@ export interface FileRoutesById {
   '/_authenticated/appointments': typeof AuthenticatedAppointmentsRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/failures': typeof AuthenticatedFailuresRoute
-  '/_authenticated/clients/$id': typeof AuthenticatedClientsIdRoute
+  '/_authenticated/clients/$id': typeof AuthenticatedClientsIdRouteWithChildren
   '/_authenticated/clients/new': typeof AuthenticatedClientsNewRoute
   '/_authenticated/conversations/$id': typeof AuthenticatedConversationsIdRoute
   '/api/public/booking-reminders': typeof ApiPublicBookingRemindersRoute
@@ -153,6 +162,7 @@ export interface FileRoutesById {
   '/api/public/manychat-webhook': typeof ApiPublicManychatWebhookRoute
   '/api/public/resend-openers': typeof ApiPublicResendOpenersRoute
   '/_authenticated/clients/': typeof AuthenticatedClientsIndexRoute
+  '/_authenticated/clients/$id/booking-debug': typeof AuthenticatedClientsIdBookingDebugRoute
   '/api/public/hooks/watchdog': typeof ApiPublicHooksWatchdogRoute
 }
 export interface FileRouteTypes {
@@ -171,6 +181,7 @@ export interface FileRouteTypes {
     | '/api/public/manychat-webhook'
     | '/api/public/resend-openers'
     | '/clients/'
+    | '/clients/$id/booking-debug'
     | '/api/public/hooks/watchdog'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -187,6 +198,7 @@ export interface FileRouteTypes {
     | '/api/public/manychat-webhook'
     | '/api/public/resend-openers'
     | '/clients'
+    | '/clients/$id/booking-debug'
     | '/api/public/hooks/watchdog'
   id:
     | '__root__'
@@ -204,6 +216,7 @@ export interface FileRouteTypes {
     | '/api/public/manychat-webhook'
     | '/api/public/resend-openers'
     | '/_authenticated/clients/'
+    | '/_authenticated/clients/$id/booking-debug'
     | '/api/public/hooks/watchdog'
   fileRoutesById: FileRoutesById
 }
@@ -325,14 +338,36 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicHooksWatchdogRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/clients/$id/booking-debug': {
+      id: '/_authenticated/clients/$id/booking-debug'
+      path: '/booking-debug'
+      fullPath: '/clients/$id/booking-debug'
+      preLoaderRoute: typeof AuthenticatedClientsIdBookingDebugRouteImport
+      parentRoute: typeof AuthenticatedClientsIdRoute
+    }
   }
 }
+
+interface AuthenticatedClientsIdRouteChildren {
+  AuthenticatedClientsIdBookingDebugRoute: typeof AuthenticatedClientsIdBookingDebugRoute
+}
+
+const AuthenticatedClientsIdRouteChildren: AuthenticatedClientsIdRouteChildren =
+  {
+    AuthenticatedClientsIdBookingDebugRoute:
+      AuthenticatedClientsIdBookingDebugRoute,
+  }
+
+const AuthenticatedClientsIdRouteWithChildren =
+  AuthenticatedClientsIdRoute._addFileChildren(
+    AuthenticatedClientsIdRouteChildren,
+  )
 
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedAppointmentsRoute: typeof AuthenticatedAppointmentsRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedFailuresRoute: typeof AuthenticatedFailuresRoute
-  AuthenticatedClientsIdRoute: typeof AuthenticatedClientsIdRoute
+  AuthenticatedClientsIdRoute: typeof AuthenticatedClientsIdRouteWithChildren
   AuthenticatedClientsNewRoute: typeof AuthenticatedClientsNewRoute
   AuthenticatedConversationsIdRoute: typeof AuthenticatedConversationsIdRoute
   AuthenticatedClientsIndexRoute: typeof AuthenticatedClientsIndexRoute
@@ -342,7 +377,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAppointmentsRoute: AuthenticatedAppointmentsRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedFailuresRoute: AuthenticatedFailuresRoute,
-  AuthenticatedClientsIdRoute: AuthenticatedClientsIdRoute,
+  AuthenticatedClientsIdRoute: AuthenticatedClientsIdRouteWithChildren,
   AuthenticatedClientsNewRoute: AuthenticatedClientsNewRoute,
   AuthenticatedConversationsIdRoute: AuthenticatedConversationsIdRoute,
   AuthenticatedClientsIndexRoute: AuthenticatedClientsIndexRoute,
