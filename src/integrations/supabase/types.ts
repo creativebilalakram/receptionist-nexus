@@ -253,6 +253,7 @@ export type Database = {
           system_prompt_override: string | null
           timezone: string
           tone_notes: string | null
+          use_job_queue: boolean
           webhook_secret: string
         }
         Insert: {
@@ -272,6 +273,7 @@ export type Database = {
           system_prompt_override?: string | null
           timezone?: string
           tone_notes?: string | null
+          use_job_queue?: boolean
           webhook_secret?: string
         }
         Update: {
@@ -291,6 +293,7 @@ export type Database = {
           system_prompt_override?: string | null
           timezone?: string
           tone_notes?: string | null
+          use_job_queue?: boolean
           webhook_secret?: string
         }
         Relationships: [
@@ -427,6 +430,75 @@ export type Database = {
           },
         ]
       }
+      outbound_jobs: {
+        Row: {
+          attempts: number
+          client_id: string
+          conversation_id: string | null
+          created_at: string
+          id: string
+          job_type: string
+          last_error: string | null
+          locked_at: string | null
+          locked_by: string | null
+          max_attempts: number
+          next_run_at: string
+          payload: Json
+          status: string
+          succeeded_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          client_id: string
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          job_type: string
+          last_error?: string | null
+          locked_at?: string | null
+          locked_by?: string | null
+          max_attempts?: number
+          next_run_at?: string
+          payload?: Json
+          status?: string
+          succeeded_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          client_id?: string
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          job_type?: string
+          last_error?: string | null
+          locked_at?: string | null
+          locked_by?: string | null
+          max_attempts?: number
+          next_run_at?: string
+          payload?: Json
+          status?: string
+          succeeded_at?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "outbound_jobs_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "outbound_jobs_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           agency_name: string | null
@@ -494,7 +566,33 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      claim_outbound_job: {
+        Args: { _worker_id: string }
+        Returns: {
+          attempts: number
+          client_id: string
+          conversation_id: string | null
+          created_at: string
+          id: string
+          job_type: string
+          last_error: string | null
+          locked_at: string | null
+          locked_by: string | null
+          max_attempts: number
+          next_run_at: string
+          payload: Json
+          status: string
+          succeeded_at: string | null
+          updated_at: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "outbound_jobs"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
+      reset_stale_outbound_jobs: { Args: never; Returns: number }
     }
     Enums: {
       [_ in never]: never
