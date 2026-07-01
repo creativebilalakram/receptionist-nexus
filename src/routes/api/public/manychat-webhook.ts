@@ -2294,6 +2294,55 @@ function mediaMarkerText(m: InboundMedia): string {
 
 
 /**
+ * Strip generic robotic English fillers that leak past the system prompt.
+ * Especially harmful for Pakistani/Urdu-speaking audiences where lines like
+ * "How can I assist you today?" or "Absolutely, we can schedule a demo for you"
+ * feel like a corporate call-center bot instead of a helpful receptionist.
+ * We surgically remove the filler; if the whole reply WAS the filler, we
+ * substitute a warm, language-mirrored opener so we never ship an empty bubble.
+ */
+function stripRoboticFillers(text: string, lastUserText: string): string {
+  if (!text) return text;
+  let out = text;
+
+  // Sentence-level bans: match at start of any sentence.
+  const bannedSentencePatterns: RegExp[] = [
+    /(^|[\.\!\?\n]\s*)how\s+(can|may)\s+i\s+(assist|help)\s+you\s+(today|now)?[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)how\s+may\s+i\s+be\s+of\s+(assistance|help)[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)is\s+there\s+anything\s+(else\s+)?i\s+can\s+help\s+(you\s+)?with[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)i\s*['\u2019]?m\s+here\s+to\s+(help|assist)[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)happy\s+to\s+help[\.\!\?]*/gi,
+    /(^|[\.\!\?\n]\s*)glad\s+to\s+(have\s+you|hear\s+from\s+you)[^\.\!\?\n]*[\.\!\?]*/gi,
+  ];
+  for (const re of bannedSentencePatterns) {
+    out = out.replace(re, (_m, lead: string) => (lead ?? "").replace(/[\.\!\?]\s*$/, ". "));
+  }
+
+  // Word-level filler openers ("Absolutely," / "Sure thing," / "Of course,"...):
+  // strip only when they appear at the start of a sentence/bubble.
+  out = out.replace(
+    /(^|[\.\!\?\n]\s*)(absolutely|certainly|sure\s+thing|of\s+course|great\s+question|i\s+understand)[\s,!\.:;\u2014\u2013\-]+/gi,
+    (_m, lead: string) => lead ?? "",
+  );
+
+  // Collapse whitespace we may have opened up.
+  out = out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+
+  // If we deleted everything, hand back a warm mirrored fallback instead of "".
+  if (!out) {
+    return localizedText(lastUserText, {
+      roman: "Bilkul, bataiye kis cheez ki tafseel chahiye?",
+      english: "Yes — tell me what you'd like to know more about.",
+      urdu: "جی، بتائیں کس بارے میں مزید جاننا ہے؟",
+      hindi: "जी, बताइए किस बारे में और जानना है?",
+      arabic: "تفضّل، ما الذي تودّ معرفته بالتفصيل؟",
+    });
+  }
+  return out;
+}
+
+
+/**
  * FIX 2 — JSON leak guard.
  * The AI occasionally emits raw JSON (or a fenced ```json block, or a prose
  * preamble + JSON) instead of plain text. Never let that reach WhatsApp.
