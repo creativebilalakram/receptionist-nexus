@@ -629,7 +629,7 @@ async function processAndSend(
   const bantKeys = ["budget", "authority", "need", "timing"] as const;
   leadScore = bantKeys.reduce((acc, k) => acc + (qualification[k] === true ? 25 : 0), 0);
 
-  const shouldEscalate = parsedAI?.escalate === true;
+  const shouldEscalate = parsedAI?.escalate === true && !bypassRepeatEscalation && !recoveringAutoRepeatEscalation;
   if (shouldEscalate) status = "escalated";
 
   // ---- BOOKING TOOL LOOP ----
