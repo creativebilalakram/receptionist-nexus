@@ -660,7 +660,7 @@ async function processAndSend(
           .filter((p) => p && p.trim().length > 0)
       : [];
 
-      : [];
+
     if (modelParts.length > 0) {
       parts = modelParts.slice(0, 3); // hard cap 3 bubbles
     } else {
