@@ -265,7 +265,9 @@ type ClientRow = {
   timezone: string | null;
   booking_link: string | null;
   system_prompt_override: string | null;
+  ai_model: string | null;
 };
+
 
 export const Route = createFileRoute("/api/public/manychat-webhook")({
   server: {
@@ -559,11 +561,14 @@ async function processAndSend(
   // and offers a different angle (or handoff on the 3rd repeat).
   const repeatInfo = detectRepeatUserMessage(data.message_text, priorHistory);
 
-  const systemPrompt = buildSystemPrompt(
+  const systemPromptStable = buildSystemPrompt(
     client,
     data.first_name ?? null,
     isFirstEverMessage,
     stickyLang.locked,
+  );
+  const systemPromptDynamic = buildDynamicSystemPrompt(
+    client,
     repeatInfo.runtimeFact,
   );
 
@@ -576,8 +581,14 @@ async function processAndSend(
     void sendWhatsAppText(data.subscriber_id, localizedStillWorking(stickyLang.locked)).catch(() => {});
   }, 25_000);
   const clearWatchdog = () => clearTimeout(watchdogTimer);
+  // Message order (prompt-caching friendly):
+  //   1) Stable system prompt (static blocks + client-specific stable context)
+  //   2) Dynamic system prompt (time anchor + per-turn runtime facts)
+  //   3) Conversation history
+  //   4) Latest user message (already the tail of `messages`)
   const aiMessages = [
-    { role: "system" as const, content: systemPrompt },
+    { role: "system" as const, content: systemPromptStable },
+    { role: "system" as const, content: systemPromptDynamic },
     ...messages.map((m) => ({
       role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
       content: m.content,
@@ -585,14 +596,14 @@ async function processAndSend(
   ];
 
   const aiKey = process.env.OPENAI_API_KEY;
-  const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const aiModel = client.ai_model || process.env.OPENAI_MODEL || "gpt-4.1-mini";
   let aiReply = FALLBACK;
   let parsedAI: AIResponse | null = null;
   let aiResponseLog: unknown = null;
   let aiStatusCode = 0;
 
   if (!aiKey) {
-    aiResponseLog = { error: "missing_OPENAI_API_KEY" };
+    aiResponseLog = { error: "missing_OPENAI_API_KEY", model: aiModel };
   } else {
     try {
       const { retryFetch } = await import("@/lib/retry");
@@ -608,6 +619,7 @@ async function processAndSend(
           response_format: { type: "json_object" },
         }),
       }, { attempts: 3, baseMs: 500, timeoutMs: 18_000, label: "openai-main" });
+
       aiStatusCode = resp.status;
       const json = await resp.json().catch(() => null);
       aiResponseLog = json;
@@ -1270,6 +1282,7 @@ async function processAndSend(
       parts_count: parts.length,
       parsed: parsedAI,
       ai_status: aiStatusCode || 200,
+      model: aiModel,
       manychat_send_ok: sendRes.ok,
       manychat_send_status: sendRes.status,
       manychat_send_error: sendRes.ok ? null : sendRes.error,
@@ -1280,6 +1293,7 @@ async function processAndSend(
     status_code: sendRes.ok ? 200 : (sendRes.status || 500),
     error: sendRes.ok ? null : sendRes.error,
   });
+
 }
 
 /**
@@ -1992,7 +2006,7 @@ async function draftBookingReply(
   if (!aiKey) return null;
   try {
     const { retryFetch } = await import("@/lib/retry");
-    const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const aiModel = process.env.OPENAI_MODEL || "gpt-4.1-mini";
     const resp = await retryFetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json", "Authorization": `Bearer ${aiKey}` },
@@ -2530,8 +2544,13 @@ function sanitizeOpener(text: string): string {
 
 
 
-function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean, lockedLang: LangCode = "en", runtimeFacts: string | null = null): string {
-  const blocks: string[] = [];
+/**
+ * Build the DYNAMIC portion of the system prompt (time anchor + per-turn
+ * runtime hints). Kept separate from the stable prompt so that the large
+ * static prefix stays byte-identical across turns and can be prompt-cached
+ * by the model provider (~50-70% cost reduction on repeated system content).
+ */
+function buildDynamicSystemPrompt(client: ClientRow, runtimeFacts: string | null = null): string {
   const tz = client.timezone || "UTC";
   const now = new Date();
   const todayLocal = new Intl.DateTimeFormat("en-US", {
@@ -2541,14 +2560,22 @@ function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstE
   const todayYmd = new Intl.DateTimeFormat("en-CA", {
     timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
   }).format(now);
-
-  // BLOCK 0 — TIME ANCHOR (critical — prevents date drift to training cutoff)
-  blocks.push(
+  const parts: string[] = [
     `CURRENT TIME ANCHOR (use this — do NOT guess from training data)
 Right now it is: ${todayLocal} (${tz}).
 Today's date is ${todayYmd}.
-When the user says "tomorrow", "kal", "next week", etc., resolve relative to THIS date — never to any other year. ALL slot_iso_utc values you emit MUST be on or after today.`
-  );
+When the user says "tomorrow", "kal", "next week", etc., resolve relative to THIS date — never to any other year. ALL slot_iso_utc values you emit MUST be on or after today.`,
+  ];
+  if (runtimeFacts && runtimeFacts.trim()) {
+    parts.push(`RUNTIME FACTS (dynamic — apply these to THIS turn only):\n${runtimeFacts.trim()}`);
+  }
+  return parts.join("\n\n");
+}
+
+function buildSystemPrompt(client: ClientRow, firstName: string | null, isFirstEverMessage: boolean, lockedLang: LangCode = "en"): string {
+  const blocks: string[] = [];
+
+
 
   // BLOCK 0B — LOCKED LANGUAGE (FIX 13)
   // The conversation is locked to the language the user opened in. Do NOT
@@ -2970,15 +2997,13 @@ STRICT TOOL NAME RULE:
 - Exactly ONE action per turn. If two things are needed (e.g. check + book), take the FIRST step this turn and the next step on the next turn.`
   );
 
-  // BLOCK 8B — RUNTIME FACTS (FIX 15B and future dynamic hints)
-  // Injected only when the code layer detects a runtime condition the AI
-  // must react to (e.g. exact-repeat message, stuck-flow recovery).
-  if (runtimeFacts && runtimeFacts.trim()) {
-    blocks.push(`RUNTIME FACTS (dynamic — apply these to THIS turn only):\n${runtimeFacts.trim()}`);
-  }
+  // Runtime facts (time anchor + per-turn hints) are appended as a SEPARATE
+  // system message by the caller via buildDynamicSystemPrompt(), so the
+  // stable prefix above stays byte-identical across turns for prompt caching.
 
   return blocks.join("\n\n");
 }
+
 
 // ---------- Booking helpers ----------
 

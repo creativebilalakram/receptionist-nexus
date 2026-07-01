@@ -1,0 +1,1 @@
+ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS ai_model text NOT NULL DEFAULT 'gpt-4.1-mini';

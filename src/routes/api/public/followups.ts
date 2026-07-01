@@ -213,7 +213,7 @@ async function generateFollowup(args: {
 }): Promise<string | null> {
   const aiKey = process.env.OPENAI_API_KEY;
   if (!aiKey) return null;
-  const aiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const aiModel = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
   // Only include REAL messages the user actually typed. Never invent anything else.
   const trimmed = args.messages.slice(-12);
