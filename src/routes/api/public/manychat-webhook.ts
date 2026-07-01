@@ -1611,7 +1611,7 @@ function pickAvailabilityFailureText(lastUserText: string): string {
 
 // ---------- List / cancel / reschedule helpers ----------
 
-type AppointmentTarget = { id: string; label: string; startIso: string };
+type AppointmentTarget = { id: string; label: string; startIso: string; scheduledAt: Date };
 
 async function fetchUpcomingForConversation(
   supabase: SupabaseAdmin,
@@ -1625,7 +1625,7 @@ async function fetchUpcomingForConversation(
     .in("status", ["scheduled", "confirmed"])
     .gte("scheduled_at", nowIso)
     .order("scheduled_at", { ascending: true })
-    .limit(5);
+    .limit(10);
   if (conversationId) q = q.eq("conversation_id", conversationId);
   const { data, error } = await q;
   if (error || !data) return [];
@@ -1634,26 +1634,126 @@ async function fetchUpcomingForConversation(
   return data.map((a) => ({
     id: a.id,
     startIso: a.scheduled_at,
+    scheduledAt: new Date(a.scheduled_at),
     label: formatSlotLabelInTz(new Date(a.scheduled_at), tz),
   }));
 }
 
-async function pickTargetAppointment(
+// Resolve which appointment the user actually means.
+// Rules (priority order):
+//   1) explicit appointment_id from AI, scoped to THIS conversation (never cross-conversation).
+//   2) match by date + time inferred from user's recent messages.
+//   3) match by date alone if only one that day.
+//   4) if a single upcoming exists in the whole convo, use it.
+//   5) otherwise ambiguous — return candidates and let caller ask.
+async function resolveTargetFromExplicitOrText(
   supabase: SupabaseAdmin,
   clientId: string,
   conversationId: string | null,
   explicitId: string | null,
-): Promise<AppointmentTarget | null> {
-  if (explicitId) {
-    const { data } = await supabase.from("appointments")
-      .select("id, scheduled_at").eq("id", explicitId).eq("client_id", clientId).maybeSingle();
+  upcoming: AppointmentTarget[],
+  messages: Msg[],
+  lastUserText: string,
+  tz: string,
+): Promise<{ target?: AppointmentTarget; ambiguous?: boolean; candidates: AppointmentTarget[] }> {
+  // 1) explicit id — only accept if it belongs to this conversation. This
+  // prevents an AI hallucination from cancelling someone else's booking.
+  if (explicitId && conversationId) {
+    const hit = upcoming.find((u) => u.id === explicitId);
+    if (hit) return { target: hit, candidates: upcoming };
+    const { data } = await supabase
+      .from("appointments")
+      .select("id, scheduled_at, conversation_id")
+      .eq("id", explicitId)
+      .eq("client_id", clientId)
+      .eq("conversation_id", conversationId)
+      .maybeSingle();
     if (data) {
-      const { data: cli } = await supabase.from("clients").select("timezone").eq("id", clientId).maybeSingle();
-      return { id: data.id, startIso: data.scheduled_at, label: formatSlotLabelInTz(new Date(data.scheduled_at), cli?.timezone || "UTC") };
+      return {
+        target: {
+          id: data.id,
+          startIso: data.scheduled_at,
+          scheduledAt: new Date(data.scheduled_at),
+          label: formatSlotLabelInTz(new Date(data.scheduled_at), tz),
+        },
+        candidates: upcoming,
+      };
     }
+    // Explicit id given but not in this conversation → treat as unknown and
+    // fall through to text-based matching.
   }
-  const list = await fetchUpcomingForConversation(supabase, clientId, conversationId);
-  return list[0] ?? null;
+
+  if (upcoming.length === 0) return { candidates: upcoming };
+
+  // 2) match by inferred date/time from user text.
+  const contextText = recentUserBookingContext(messages, lastUserText);
+  const timeLocal =
+    parseSpecificTimeLocal(lastUserText) ??
+    parseSpecificTimeLocal(contextText) ??
+    null;
+  const dateLabel = inferPreferredDateLabel({}, messages, lastUserText);
+  const targetDT = resolveTargetDateTime(dateLabel ?? null, timeLocal, tz);
+
+  let matches = upcoming;
+  if (targetDT.localYmd) {
+    const byDay = upcoming.filter((u) => localYmdInTz(u.scheduledAt, tz) === targetDT.localYmd);
+    if (byDay.length > 0) matches = byDay;
+  }
+  if (targetDT.exactUtcMs != null) {
+    const byExact = matches.filter(
+      (u) => Math.abs(u.scheduledAt.getTime() - (targetDT.exactUtcMs as number)) < 60 * 60_000,
+    );
+    if (byExact.length > 0) matches = byExact;
+  }
+
+  if (matches.length === 1) return { target: matches[0], candidates: upcoming };
+
+  // 4) if user gave no date/time hint and only one upcoming exists overall, use it.
+  if (!targetDT.localYmd && targetDT.exactUtcMs == null && upcoming.length === 1) {
+    return { target: upcoming[0], candidates: upcoming };
+  }
+
+  return { ambiguous: true, candidates: matches.length > 0 ? matches : upcoming };
+}
+
+// Restore the most recently cancelled appointment (within last 60 min) for
+// this conversation — used when the user says "wapas book kar do" / "undo".
+async function restoreLastCancelledForConversation(
+  supabase: SupabaseAdmin,
+  clientId: string,
+  conversationId: string | null,
+  tz: string,
+): Promise<{ ok: true; appointmentId: string; label: string } | { ok: false; reason: string }> {
+  if (!conversationId) return { ok: false, reason: "no_conversation" };
+  const sinceIso = new Date(Date.now() - 60 * 60_000).toISOString();
+  const { data, error } = await supabase
+    .from("appointments")
+    .select("id, scheduled_at, meeting_type_id, contact_name, contact_phone, contact_email, notes")
+    .eq("client_id", clientId)
+    .eq("conversation_id", conversationId)
+    .eq("status", "cancelled")
+    .gte("updated_at", sinceIso)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return { ok: false, reason: "no_recent_cancel" };
+  const start = new Date(data.scheduled_at);
+  if (start.getTime() < Date.now() + 5 * 60_000) return { ok: false, reason: "slot_in_past" };
+
+  const { bookAppointment } = await import("@/lib/booking-core.server");
+  const res = await bookAppointment(supabase, {
+    clientId,
+    meetingTypeId: data.meeting_type_id,
+    startIso: data.scheduled_at,
+    contactName: data.contact_name,
+    contactPhone: data.contact_phone,
+    contactEmail: data.contact_email,
+    conversationId,
+    notes: data.notes,
+    bookedVia: "restore",
+  });
+  if (!res.ok) return { ok: false, reason: res.error };
+  return { ok: true, appointmentId: res.appointmentId, label: formatSlotLabelInTz(start, tz) };
 }
 
 function formatSlotLabelInTz(d: Date, tz: string): string {
