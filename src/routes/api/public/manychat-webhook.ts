@@ -1805,6 +1805,64 @@ function composeCancelSuccessReply(label: string, lastUserText: string): string 
   });
 }
 
+function composeAmbiguousBookingReply(
+  candidates: AppointmentTarget[],
+  lastUserText: string,
+  intent: "cancel" | "reschedule",
+): string {
+  const labels = candidates.slice(0, 3).map((c) => `*${c.label}*`).join(candidates.length === 2 ? " ya " : ", ");
+  const verb = intent === "cancel" ? "cancel" : "reschedule";
+  return localizedText(lastUserText, {
+    roman: `Aap ki ek se zyada bookings hain: ${labels}. Kis wali ${verb} karni hai? Date ya time bata dein.`,
+    english: `You have more than one booking: ${labels}. Which one should I ${verb}? Send the date or time.`,
+    urdu: `آپ کی ایک سے زیادہ bookings ہیں: ${labels}۔ کون سی ${verb} کرنی ہے؟ Date یا time بھیج دیں۔`,
+    hindi: `आपकी एक से ज़्यादा bookings हैं: ${labels}। कौन सी ${verb} करनी है? Date या time भेजें।`,
+    arabic: `لديك أكثر من حجز: ${labels}. أيها تريد أن ${intent === "cancel" ? "أُلغي" : "أعيد جدولته"}؟ أرسل التاريخ أو الوقت.`,
+  });
+}
+
+function composeRestoreSuccessReply(label: string, lastUserText: string): string {
+  return localizedText(lastUserText, {
+    roman: `Ho gaya, *${label}* wali booking wapas laga di. Calendar invite phir se aa jayegi.`,
+    english: `Done, your *${label}* booking is back on the calendar. A fresh invite will arrive shortly.`,
+    urdu: `ہو گیا، *${label}* والی booking دوبارہ لگا دی۔ Calendar invite دوبارہ آ جائے گی۔`,
+    hindi: `हो गया, *${label}* वाली booking वापस लगा दी। Calendar invite फिर से आएगा।`,
+    arabic: `تم إعادة حجز *${label}* على التقويم. ستصلك دعوة جديدة قريباً.`,
+  });
+}
+
+function composeRestoreFailureReply(lastUserText: string, reason: string): string {
+  const past = reason === "slot_in_past";
+  const none = reason === "no_recent_cancel" || reason === "no_conversation";
+  return localizedText(lastUserText, {
+    roman: none
+      ? "Mujhe pichhle ghante mein kisi cancelled booking ka record nahi mila. Naya time bata dein?"
+      : past
+        ? "Wo time ab guzar chuka hai. Naya time bata dein, dobara book kar deta hun."
+        : "Wo slot ab available nahi. Alternative time bata dein?",
+    english: none
+      ? "I don’t see a recent cancellation in the last hour. Want to pick a new time?"
+      : past
+        ? "That time has already passed. Share a new time and I’ll rebook."
+        : "That slot isn’t free anymore. Want to pick another time?",
+    urdu: none
+      ? "پچھلے گھنٹے میں کوئی cancelled booking نہیں ملی۔ نیا time بتائیں؟"
+      : past
+        ? "وہ وقت گزر چکا ہے۔ نیا time بتائیں، دوبارہ book کر دیتا ہوں۔"
+        : "وہ slot اب available نہیں۔ کوئی اور time بتائیں؟",
+    hindi: none
+      ? "पिछले घंटे में कोई cancelled booking नहीं मिली। नया time बताएँ?"
+      : past
+        ? "वो time निकल चुका है। नया time बताएँ, दोबारा book कर देता हूँ।"
+        : "वो slot अब available नहीं। कोई और time बताएँ?",
+    arabic: none
+      ? "لا أرى إلغاءً حديثاً في الساعة الماضية. تريد اختيار وقت جديد؟"
+      : past
+        ? "الوقت مضى بالفعل. أرسل وقتاً جديداً وسأعيد الحجز."
+        : "الموعد لم يعد متاحاً. تريد وقتاً آخر؟",
+  });
+}
+
 function composeRescheduleSuccessReply(oldLabel: string, newLabel: string, lastUserText: string): string {
   return localizedText(lastUserText, {
     roman: `Ho gaya, *${oldLabel}* se move karke *${newLabel}* pe reschedule kar di.`,
