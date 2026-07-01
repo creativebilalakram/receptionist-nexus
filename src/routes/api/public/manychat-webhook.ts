@@ -653,7 +653,15 @@ async function processAndSend(
   // in the screenshot: AI emitted check_availability, the old guard discarded
   // it because status was already "booked", and only the holding bubble was
   // sent with no second availability/confirmation message.
-  if (action && action.type !== "none" && existing?.status === "booked" && !looksLikeExplicitBookingTurn(data.message_text, messages)) {
+  // Only suppress a NEW check_availability / book_slot on an already-booked
+  // convo when the user didn't clearly ask. List / cancel / reschedule are
+  // always legitimate on a booked conversation and must never be suppressed.
+  if (
+    action &&
+    (action.type === "check_availability" || action.type === "book_slot") &&
+    existing?.status === "booked" &&
+    !looksLikeExplicitBookingTurn(data.message_text, messages)
+  ) {
     await supabaseAdmin.from("webhook_logs").insert({
       client_id: client.id,
       direction: "outbound",
