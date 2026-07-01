@@ -620,10 +620,23 @@ async function processAndSend(
   // continue with the real work and send the final answer as bubble #2.
   let ackSent = false;
   let action = normalizeBookingAction(parsedAI?.booking_action, parsedAI, messages, data.message_text);
-  // SAFETY: if the conversation is already booked, ignore any new booking
-  // action the AI emits (e.g. on "thanks"). Re-running book_slot for an
-  // already-taken slot otherwise produces a "no longer available" reply.
-  if (action && action.type !== "none" && existing?.status === "booked") {
+  // SAFETY: if the conversation is already booked, ignore accidental booking
+  // actions on non-booking turns (e.g. "thanks"). BUT do not suppress a real
+  // new slot / availability request. This was causing the production failure
+  // in the screenshot: AI emitted check_availability, the old guard discarded
+  // it because status was already "booked", and only the holding bubble was
+  // sent with no second availability/confirmation message.
+  if (action && action.type !== "none" && existing?.status === "booked" && !looksLikeExplicitBookingTurn(data.message_text, messages)) {
+    await supabaseAdmin.from("webhook_logs").insert({
+      client_id: client.id,
+      direction: "outbound",
+      payload: {
+        kind: "booking_action_suppressed_after_booked",
+        booking_action: action.type,
+        user_text: data.message_text,
+      } as unknown as Json,
+      status_code: 200,
+    });
     action = { type: "none" };
   }
   let toolFinalReply = false;
@@ -1113,6 +1126,29 @@ function buildCheckAvailabilityAction(
 function looksLikeAvailabilityAsk(text: string): boolean {
   const t = text.toLowerCase();
   return /\b(avb|avail|available|availability|slot|slots|time|timing|when|kab|konsa|dikhao|show)\b/.test(t);
+}
+
+function looksLikeExplicitBookingTurn(text: string, messages: Msg[]): boolean {
+  const t = (text ?? "").toLowerCase();
+  if (!t.trim()) return false;
+  if (looksLikeAvailabilityAsk(t)) return true;
+  if (parseSpecificTimeLocal(t)) return true;
+
+  const hasBookingVerb = /\b(book|booking|appointment|demo|schedule|schedul|reschedule|cancel|lock|confirm|reserve|pakka|fix|set)\b/.test(t)
+    || /\b(book\s*kar|lock\s*kar|confirm\s*kar|kar\s*do|kr\s*do|kar\s*dun|kr\s*dun)\b/.test(t);
+  if (hasBookingVerb) return true;
+
+  const dateish = /\b(today|tomorrow|tmrw|kal|aaj|sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?)\b/.test(t);
+  const timeish = /\b(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*(?:am|pm)\b|\b(?:[01]?\d|2[0-3]):[0-5]\d\b/.test(t);
+  if (dateish && timeish) return true;
+
+  const affirmative = /^(yes|yep|yeah|ok|okay|sure|confirm|confirmed|lock|book|done|haan|han|ha|jee|ji|theek|thk|sahi|kar do|kr do|kardo|krdo)\b/.test(t.trim());
+  if (affirmative) {
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant")?.content.toLowerCase() ?? "";
+    if (/\b(available|slot|lock|book|confirm|work|works|kar dun|kr dun)\b/.test(lastAssistant)) return true;
+  }
+
+  return false;
 }
 
 function inferPreferredDateLabel(
