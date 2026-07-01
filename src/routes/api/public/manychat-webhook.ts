@@ -1042,6 +1042,46 @@ function safeParseAIJson(content: string): AIResponse | null {
 }
 
 /**
+ * FIX 3 — strip ManyChat placeholder tokens that leak into inbound payloads.
+ * Handles {{first_name}}, [[phone]], <<email>> and bare placeholder words
+ * ManyChat renders when the underlying variable is null.
+ */
+const PLACEHOLDER_WORDS = new Set([
+  "first name", "firstname", "last name", "lastname", "full name", "fullname",
+  "phone", "phone number", "email", "email address", "name", "user", "customer",
+  "n/a", "na", "null", "undefined",
+]);
+
+function sanitizePlaceholder(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const cleaned = String(v)
+    .replace(/\{\{[^}]*\}\}/g, " ")
+    .replace(/\[\[[^\]]*\]\]/g, " ")
+    .replace(/<<[^>]*>>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  if (PLACEHOLDER_WORDS.has(cleaned.toLowerCase())) return null;
+  return cleaned;
+}
+
+function sanitizeInboundText(raw: string): string {
+  if (!raw) return "";
+  // Strip unresolved template tokens but keep the rest of the sentence.
+  const stripped = raw
+    .replace(/\{\{[^}]*\}\}/g, " ")
+    .replace(/\[\[[^\]]*\]\]/g, " ")
+    .replace(/<<[^>]*>>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped) return "";
+  // If what's left is just a placeholder word, treat as a bare "hi" so the
+  // premium opener fires cleanly instead of the AI parroting "First Name".
+  if (PLACEHOLDER_WORDS.has(stripped.toLowerCase())) return "hi";
+  return stripped;
+}
+
+/**
  * FIX 2 — JSON leak guard.
  * The AI occasionally emits raw JSON (or a fenced ```json block, or a prose
  * preamble + JSON) instead of plain text. Never let that reach WhatsApp.
