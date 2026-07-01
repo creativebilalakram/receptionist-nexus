@@ -250,7 +250,9 @@ ${transcript}
 
 ANTI-FABRICATION: ${substanceGuidance}
 
-RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Never say phrases like "as you mentioned", "regarding what you said about X", "circling back on your interest in Y" unless X/Y literally appears in USER MESSAGES above. Output ONLY the message text.`;
+RULES: mirror their language/script. 1–3 short lines. *bold* key words. No dashes/bullets/headings/numbered lists. End with ONE soft question. Never repeat a message they already received. Never say phrases like "as you mentioned", "regarding what you said about X", "circling back on your interest in Y" unless X/Y literally appears in USER MESSAGES above. Output ONLY the message text.
+
+CAPABILITY INVENTORY (CRITICAL — FIX 10): the ONLY thing you can deliver is a booked demo call and the booking link. You do NOT have and MUST NEVER offer: demo videos, walkthrough videos, screen recordings, PDFs, brochures, decks, slides, screenshots, case studies, portfolios, samples, attachments, files, or any "let me send you a ...". Do NOT write "video bhej doon", "send you a quick video", "share a PDF", "brochure bhej dun", "case study bhejta hoon", "recording share kar doon", or any variant. If a re-engagement hook is needed, offer a short *live demo call* instead — never a file.`;
 
 
   try {
