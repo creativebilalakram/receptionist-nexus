@@ -950,7 +950,7 @@ async function processAndSend(
     } else if (action.type === "list_bookings") {
       const { rescheduleAppointment: _rs } = await import("@/lib/booking-core.server");
       void _rs;
-      const upcoming = await fetchUpcomingForConversation(supabaseAdmin, client.id, convoId);
+      const upcoming = await fetchUpcomingForConversation(supabaseAdmin, client.id, convoId ?? null);
       aiReply = composeListBookingsReply(upcoming, data.message_text);
       toolFinalReply = true;
       await supabaseAdmin.from("webhook_logs").insert({
@@ -960,7 +960,7 @@ async function processAndSend(
         status_code: 200,
       });
     } else if (action.type === "cancel_booking") {
-      const target = await pickTargetAppointment(supabaseAdmin, client.id, convoId, action.appointment_id ?? null);
+      const target = await pickTargetAppointment(supabaseAdmin, client.id, convoId ?? null, action.appointment_id ?? null);
       if (!target) {
         aiReply = composeNoBookingFoundReply(data.message_text);
         toolFinalReply = true;
@@ -995,7 +995,7 @@ async function processAndSend(
         }
       }
     } else if (action.type === "reschedule_booking") {
-      const target = await pickTargetAppointment(supabaseAdmin, client.id, convoId, action.appointment_id ?? null);
+      const target = await pickTargetAppointment(supabaseAdmin, client.id, convoId ?? null, action.appointment_id ?? null);
       const ctx = await loadAvailabilityContext(supabaseAdmin, client.id, null);
       if (!target) {
         aiReply = composeNoBookingFoundReply(data.message_text);
