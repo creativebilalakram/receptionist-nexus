@@ -1130,6 +1130,7 @@ async function processAndSend(
 
 
   aiReply = sanitizeReplyText(aiReply);
+  aiReply = stripRoboticFillers(aiReply, data.message_text);
 
   // FIX 2: if the sanitizer stripped a JSON-only payload down to nothing,
   // fall back to a safe localized filler instead of shipping an empty bubble
