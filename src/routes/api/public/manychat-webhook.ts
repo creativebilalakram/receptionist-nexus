@@ -1041,6 +1041,7 @@ async function processAndSend(
     language: stickyLang.locked,
     last_reasoning: parsedAI?.reasoning ?? null,
     last_message_at: new Date().toISOString(),
+    last_offered_slot_iso: offeredSlotIso,
     phone: data.phone ?? existing?.phone ?? null,
     first_name: data.first_name ?? existing?.first_name ?? null,
     ...(recoveringAutoRepeatEscalation && !shouldEscalate
