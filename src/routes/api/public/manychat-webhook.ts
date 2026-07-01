@@ -455,6 +455,20 @@ async function processAndSend(
   let status = existing?.status ?? "active";
   let currentStage: Stage = ((existing?.current_stage as Stage | undefined) ?? "open");
 
+  // FIX 13 — sticky per-conversation language lock. Prevents the AI from
+  // randomly switching to formal English when the user is typing Roman Urdu.
+  const priorUserTexts = messages
+    .slice(0, -1)
+    .filter((m) => m.role === "user")
+    .map((m) => m.content);
+  const previousLocked =
+    (["en", "ur-roman", "ur-script", "hi-script", "ar"] as const).includes(
+      ((existing as unknown as { language?: string })?.language as LangCode) ?? "__",
+    )
+      ? (((existing as unknown as { language?: string })?.language as LangCode))
+      : null;
+  const stickyLang = resolveStickyLanguage(previousLocked, data.message_text, priorUserTexts);
+
   if (!existing) {
     const { data: newRow, error: insErr } = await supabaseAdmin.from("conversations").insert({
       client_id: client.id,
