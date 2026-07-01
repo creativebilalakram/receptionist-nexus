@@ -277,6 +277,11 @@ CAPABILITY INVENTORY (CRITICAL — FIX 10): the ONLY thing you can deliver is a 
     cleaned = cleaned.split("\n").filter((l) => !/^-{3,}$/.test(l.trim())).join("\n").trim();
     // Scrub unresolved placeholders that might leak into the reply
     cleaned = cleaned.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
+    // FIX 10 — drop any sentence that promises a nonexistent deliverable
+    // (video / PDF / brochure / deck / screenshot / case study / recording /
+    // walkthrough / sample). If the whole message was one such offer, skip
+    // sending anything rather than shipping half a promise.
+    cleaned = scrubImaginaryOffersFollowup(cleaned);
     return cleaned.length > 0 && cleaned.length < 700 ? cleaned : null;
   } catch {
     return null;
