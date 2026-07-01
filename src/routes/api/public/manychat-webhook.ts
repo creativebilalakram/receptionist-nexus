@@ -1133,13 +1133,22 @@ function normalizeBookingAction(
   messages: Msg[],
   lastUserText: string,
 ): NormalizedBookingAction | undefined {
+  const forceAvailabilityCheck = shouldForceAvailabilityCheck(ai, messages, lastUserText);
   if (!action) {
-    return (ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)) || looksLikeExplicitBookingTurn(lastUserText, messages)
+    return forceAvailabilityCheck
       ? buildCheckAvailabilityAction({}, messages, lastUserText)
       : undefined;
   }
 
-  if (action.type === "none") return { type: "none" };
+  // Production guard: the model often says `ready_to_book=true` and writes a
+  // holding reply, but still emits booking_action={type:"none"}. That caused
+  // the exact live failure: WhatsApp got only "let me check..." and the backend
+  // never checked slots. Code-level booking intent wins over model "none".
+  if (action.type === "none") {
+    return forceAvailabilityCheck
+      ? buildCheckAvailabilityAction({}, messages, lastUserText)
+      : { type: "none" };
+  }
   if (action.type === "check_availability") {
     return {
       type: "check_availability",
@@ -1163,7 +1172,7 @@ function normalizeBookingAction(
     return buildCheckAvailabilityAction(action, messages, lastUserText);
   }
 
-  if (ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)) {
+  if (forceAvailabilityCheck) {
     return buildCheckAvailabilityAction(action, messages, lastUserText);
   }
 
@@ -1175,14 +1184,44 @@ function buildCheckAvailabilityAction(
   messages: Msg[],
   lastUserText: string,
 ): CheckAvailabilityAction {
-  const specific = parseSpecificTimeLocal(lastUserText) ?? null;
+  const contextText = recentUserBookingContext(messages, lastUserText);
+  const specific = parseSpecificTimeLocal(lastUserText) ?? parseSpecificTimeLocal(contextText) ?? null;
   return {
     type: "check_availability",
     user_stated_time: lastUserText,
     preferred_date_label: inferPreferredDateLabel(raw, messages, lastUserText) ?? undefined,
-    preferred_time_window: inferTimeWindow(lastUserText, specific),
+    preferred_time_window: inferTimeWindow(`${contextText}\n${lastUserText}`, specific),
     specific_time_local: specific,
   };
+}
+
+function shouldForceAvailabilityCheck(ai: AIResponse | null, messages: Msg[], lastUserText: string): boolean {
+  if (looksLikeExplicitBookingTurn(lastUserText, messages)) return true;
+  if (ai?.ready_to_book && looksLikeAvailabilityAsk(lastUserText)) return true;
+  if (isPokeAfterAvailabilityHold(lastUserText, messages)) return true;
+  return false;
+}
+
+function recentUserBookingContext(messages: Msg[], lastUserText: string): string {
+  const recentUsers = messages
+    .filter((m) => m.role === "user")
+    .map((m) => m.content)
+    .slice(-4);
+  if (!recentUsers.includes(lastUserText)) recentUsers.push(lastUserText);
+  return recentUsers.join(" \n ");
+}
+
+function isPokeAfterAvailabilityHold(text: string, messages: Msg[]): boolean {
+  const t = normalizeForMatch(text);
+  const isPoke = /^(\?|\?\?|hello|helo|hey|hi|update|still|any update|kya hua|kia hua|kaha ho|kidhar|batao|btado)$/.test(t)
+    || /^\?+$/.test((text ?? "").trim());
+  if (!isPoke) return false;
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant")?.content.toLowerCase() ?? "";
+  const hadRecentBookingAsk = messages
+    .filter((m) => m.role === "user")
+    .slice(-4)
+    .some((m) => looksLikeExplicitBookingTurn(m.content, messages));
+  return hadRecentBookingAsk && /\b(check|checking|availability|available|slot|let me check|ek sec|one sec)\b/i.test(lastAssistant);
 }
 
 function looksLikeAvailabilityAsk(text: string): boolean {
